@@ -336,16 +336,23 @@ describe('mission.start', () => {
         objective: 'Inspect both layers and integrate them',
         maxConcurrency: 2,
         steps: [
-          { key: 'mission', instruction: 'Inspect Mission entry', dependsOn: [] },
+          {
+            key: 'mission',
+            instruction: 'Inspect Mission entry',
+            dependsOn: [],
+            contextFrom: []
+          },
           {
             key: 'control',
             instruction: 'Inspect orchestration control plane',
-            dependsOn: []
+            dependsOn: [],
+            contextFrom: []
           },
           {
             key: 'integrate',
             instruction: 'Integrate both findings',
-            dependsOn: ['mission', 'control']
+            dependsOn: ['mission', 'control'],
+            contextFrom: ['mission', 'control']
           }
         ]
       })

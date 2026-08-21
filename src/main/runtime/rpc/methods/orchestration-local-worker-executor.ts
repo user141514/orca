@@ -15,8 +15,22 @@ type LocalWorkerExecutionConfig = {
   devMode?: boolean
 }
 
+export type LocalWorkerTaskInputResolver = (input: {
+  taskId: string
+  runId: string
+  spec: string
+  dependencies: { taskId: string; result: string | null }[]
+}) => string | Promise<string>
+
+type LocalWorkerExecutorOptions = {
+  resolveTaskInput?: LocalWorkerTaskInputResolver
+}
+
 export class LocalWorkerExecutor implements OrchestrationExecutor {
-  constructor(private readonly runtime: OrcaRuntimeService) {}
+  constructor(
+    private readonly runtime: OrcaRuntimeService,
+    private readonly options: LocalWorkerExecutorOptions = {}
+  ) {}
 
   async execute(input: Parameters<OrchestrationExecutor['execute']>[0]): Promise<void> {
     const db = this.runtime.getOrchestrationDb()
@@ -27,8 +41,17 @@ export class LocalWorkerExecutor implements OrchestrationExecutor {
     }
 
     let config: LocalWorkerExecutionConfig
+    let taskSpec = task.spec
     try {
       config = parseLocalWorkerExecution(input.execution)
+      if (this.options.resolveTaskInput) {
+        taskSpec = await this.options.resolveTaskInput({
+          taskId: task.id,
+          runId: input.runId,
+          spec: task.spec,
+          dependencies: readTaskDependencyResults(db, task.deps)
+        })
+      }
       const workspace = await this.runtime.showManagedTerminalWorkspace(`id:${config.worktreeId}`)
       if (workspace.id !== config.worktreeId) {
         throw new Error(`Workspace ${config.worktreeId} resolved as ${workspace.id}.`)
@@ -48,7 +71,7 @@ export class LocalWorkerExecutor implements OrchestrationExecutor {
       runtime: this.runtime,
       db,
       runId: input.runId,
-      task: { id: task.id, spec: task.spec },
+      task: { id: task.id, spec: taskSpec },
       dispatchId: input.dispatchId,
       coordinatorAddress: `run:${input.runId}`,
       placement: { kind: 'existing-workspace', worktreeId: config.worktreeId },
@@ -91,6 +114,23 @@ function parseLocalWorkerExecution(
     timeoutMs,
     ...(devMode === undefined ? {} : { devMode })
   }
+}
+
+function readTaskDependencyResults(
+  db: ReturnType<OrcaRuntimeService['getOrchestrationDb']>,
+  serializedDeps: string
+): { taskId: string; result: string | null }[] {
+  const parsed: unknown = JSON.parse(serializedDeps)
+  if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === 'string')) {
+    throw new Error('Task dependencies must be a JSON array of task IDs.')
+  }
+  return parsed.map((taskId) => {
+    const dependency = db.getTask(taskId)
+    if (!dependency) {
+      throw new Error(`Task dependency ${taskId} does not exist.`)
+    }
+    return { taskId, result: dependency.result }
+  })
 }
 
 function readNonEmptyString(config: Record<string, unknown>, key: string): string {

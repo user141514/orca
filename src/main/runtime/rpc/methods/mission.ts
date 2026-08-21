@@ -119,7 +119,8 @@ export const MISSION_METHODS: RpcMethod[] = [
           steps: missionPlan.tasks.map((task) => ({
             key: task.key,
             instruction: task.spec,
-            dependsOn: task.deps
+            dependsOn: task.deps,
+            contextFrom: task.deps
           }))
         })
         return {

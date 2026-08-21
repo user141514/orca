@@ -2,6 +2,7 @@ export type CollaborationStep = {
   key: string
   instruction: string
   dependsOn?: string[]
+  contextFrom?: string[]
 }
 
 export type CollaborationPlan = {
