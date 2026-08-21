@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OrcaRuntimeService } from '../../orca-runtime'
 import { OrchestrationDb } from '../../orchestration/db'
 import { RuntimeOrchestrationRunner } from '../../orchestration/orchestration-runtime-runner'
+import { CollaborationKernel } from '../../collaboration/collaboration-kernel'
 import * as preflight from '../../../ipc/preflight'
 import { MISSION_METHODS } from './mission'
 
@@ -313,6 +314,7 @@ describe('mission.start', () => {
     const runExisting = vi
       .spyOn(RuntimeOrchestrationRunner.prototype, 'runExisting')
       .mockImplementation(async (runId) => ({ runId, state: 'completed' }))
+    const collaborationStart = vi.spyOn(CollaborationKernel.prototype, 'start')
     const createTerminal = vi.spyOn(runtime, 'createTerminal')
 
     try {
@@ -330,6 +332,23 @@ describe('mission.start', () => {
         state: 'running'
       })
       expect(createTerminal).not.toHaveBeenCalled()
+      expect(collaborationStart).toHaveBeenCalledWith({
+        objective: 'Inspect both layers and integrate them',
+        maxConcurrency: 2,
+        steps: [
+          { key: 'mission', instruction: 'Inspect Mission entry', dependsOn: [] },
+          {
+            key: 'control',
+            instruction: 'Inspect orchestration control plane',
+            dependsOn: []
+          },
+          {
+            key: 'integrate',
+            instruction: 'Integrate both findings',
+            dependsOn: ['mission', 'control']
+          }
+        ]
+      })
       const runId = (result as { runId: string }).runId
       expect(runExisting).toHaveBeenCalledWith(runId)
       const tasks = db.listTasks({ runId })

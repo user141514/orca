@@ -7,6 +7,7 @@ describe('CollaborationKernel', () => {
   it('delegates a semantic collaboration plan through the execution port', async () => {
     const plan: CollaborationPlan = {
       objective: 'Produce and review one draft',
+      maxConcurrency: 2,
       steps: [
         { key: 'draft', instruction: 'Produce the first draft.' },
         { key: 'review', instruction: 'Review the first draft.' }

@@ -1,10 +1,12 @@
 export type CollaborationStep = {
   key: string
   instruction: string
+  dependsOn?: string[]
 }
 
 export type CollaborationPlan = {
   objective: string
+  maxConcurrency: number
   steps: CollaborationStep[]
 }
 
