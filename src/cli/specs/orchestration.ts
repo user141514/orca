@@ -4,6 +4,27 @@ import { ORCHESTRATION_WORKER_COMMAND_SPECS } from './orchestration-worker-specs
 
 export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
   {
+    path: ['orchestration', 'plan-create'],
+    summary: 'Create a durable orchestration Run from a structured plan file',
+    usage: 'orca orchestration plan-create --file <plan.json> [--retry-request <id>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'file', 'retry-request'],
+    notes: [
+      'The plan file contains objective, maxConcurrency, and a Task DAG. Creating the plan does not require a coordinator terminal.',
+      'Use plan-run with the returned Run ID to execute or resume it.'
+    ]
+  },
+  {
+    path: ['orchestration', 'plan-run'],
+    summary: 'Run or resume a durable structured orchestration plan',
+    usage:
+      'orca orchestration plan-run --run <run_id> [--wait-timeout-ms <n>] [--retry-request <id>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'run', 'wait-timeout-ms', 'retry-request'],
+    notes: [
+      'This is a foreground coordinator loop. If the client disconnects, rerun plan-run with the same Run ID to resume from durable state.',
+      'The current execution adapter supports local-worker Tasks; other backends remain explicit future adapters.'
+    ]
+  },
+  {
     path: ['orchestration', 'run-create'],
     summary: 'Create and bind a lightweight orchestration Run',
     usage:

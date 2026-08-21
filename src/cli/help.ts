@@ -64,6 +64,10 @@ Repos:
   repo set-base-ref         Set the repo's default base ref for future worktrees
   repo search-refs          Search branch/tag refs within a repo
 
+Mission:
+  orca "<mission>"          Start the configured default agent in the current workspace
+  mission start             Explicit form of the root mission entry
+
 Worktrees:
   worktree list             List Orca-managed worktrees
   worktree show             Show one worktree
@@ -93,6 +97,8 @@ Terminals:
   terminal close            Close a terminal pane/session, or its whole tab with --tab
 
 Orchestration:
+  orchestration plan-create Create a durable Run from a structured plan file
+  orchestration plan-run    Run or resume a durable structured plan
   orchestration run-create  Create and bind a lightweight orchestration Run
   orchestration run-use     Bind this coordinator terminal to an existing Run
   orchestration run-current Show this terminal's bound Run

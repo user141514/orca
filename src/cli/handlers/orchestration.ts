@@ -1,4 +1,6 @@
 /* eslint-disable max-lines -- Why: orchestration CLI handlers share flag-parsing helpers and dispatch/preamble logic; splitting by verb would fragment the RuntimeClient call shape without reducing complexity. */
+import { readFile } from 'node:fs/promises'
+import { isAbsolute, join } from 'node:path'
 import type { CommandHandler } from '../dispatch'
 import type { RuntimeClient } from '../runtime-client'
 import { printResult } from '../format'
@@ -36,6 +38,7 @@ import { orchestrationMutationRecoveryError } from '../orchestration-mutation-re
 
 // Why: 15 s is well under Claude Code's ~2 min Bash-tool silence budget while keeping log volume low. See design doc §3.4.
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 15_000
+const PLAN_RUN_CLIENT_TIMEOUT_MS = 86_400_000
 function getLifecycleGroupRecipientError(type: 'worker_done' | 'heartbeat'): string {
   return `${type} messages belong to one exact Dispatch and cannot target a group address.`
 }
@@ -486,7 +489,48 @@ function safeJson(value: unknown): string {
   }
 }
 
+async function readOrchestrationPlanFile(cwd: string, file: string): Promise<unknown> {
+  const path = isAbsolute(file) ? file : join(cwd, file)
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as unknown
+  } catch (error) {
+    throw new RuntimeClientError(
+      'invalid_argument',
+      `Could not read orchestration plan ${file}: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+}
+
 export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
+  'orchestration plan-create': async ({ flags, client, cwd, json }) => {
+    const plan = await readOrchestrationPlanFile(cwd, getRequiredStringFlag(flags, 'file'))
+    const result = await callMutation<{
+      run: { id: string; objective: string }
+      tasksByKey: Record<string, { id: string }>
+      maxConcurrency: number
+    }>(client, flags, 'orchestration.planCreate', plan)
+    printResult(
+      result,
+      json,
+      (r) =>
+        `Plan Run ${r.run.id} created: ${r.run.objective} (${Object.keys(r.tasksByKey).length} tasks)`
+    )
+  },
+
+  'orchestration plan-run': async ({ flags, client, json }) => {
+    const result = await callMutation<{ runId: string; state: string }>(
+      client,
+      flags,
+      'orchestration.planRun',
+      {
+        run: getRequiredStringFlag(flags, 'run'),
+        waitTimeoutMs: getOptionalPositiveIntegerFlag(flags, 'wait-timeout-ms')
+      },
+      { timeoutMs: PLAN_RUN_CLIENT_TIMEOUT_MS }
+    )
+    printResult(result, json, (r) => `Plan Run ${r.runId}: ${r.state}`)
+  },
+
   'orchestration run-create': async ({ flags, client, cwd, json }) => {
     const from = await resolveCoordinatorTerminalHandle(flags, cwd, client)
     const result = await callMutation<{

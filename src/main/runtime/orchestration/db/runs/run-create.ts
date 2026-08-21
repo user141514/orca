@@ -8,23 +8,37 @@ export function createRun(
   this: OrchestrationDb,
   params: {
     objective: string
-    coordinatorHandle: string
-    coordinatorPaneKey: string
+    coordinatorHandle?: string
+    coordinatorPaneKey?: string
   }
 ): RunRow {
   const id = generateId('run')
+  const hasCoordinator = Boolean(params.coordinatorHandle && params.coordinatorPaneKey)
+  if (Boolean(params.coordinatorHandle) !== Boolean(params.coordinatorPaneKey)) {
+    throw new Error('Run coordinator handle and pane key must be provided together.')
+  }
   this.db.exec('BEGIN IMMEDIATE')
   try {
-    this.unbindOtherRunsForPane(params.coordinatorPaneKey)
+    if (params.coordinatorPaneKey) {
+      this.unbindOtherRunsForPane(params.coordinatorPaneKey)
+    }
     this.db
       .prepare(
         `INSERT INTO runs (
            id, objective, coordinator_handle, coordinator_pane_key,
            consumer_generation, legacy
-         ) VALUES (?, ?, ?, ?, 1, 0)`
+         ) VALUES (?, ?, ?, ?, ?, 0)`
       )
-      .run(id, params.objective, params.coordinatorHandle, params.coordinatorPaneKey)
-    this.rememberRunCoordinatorHandle(id, params.coordinatorHandle)
+      .run(
+        id,
+        params.objective,
+        params.coordinatorHandle ?? null,
+        params.coordinatorPaneKey ?? null,
+        hasCoordinator ? 1 : 0
+      )
+    if (params.coordinatorHandle) {
+      this.rememberRunCoordinatorHandle(id, params.coordinatorHandle)
+    }
     this.db.exec('COMMIT')
   } catch (error) {
     this.db.exec('ROLLBACK')

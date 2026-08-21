@@ -1,9 +1,25 @@
 import type { OrchestrationDb } from '../../orchestration/db'
+import type { WorkerDispatchState } from '../../orchestration/types'
 import {
   isUnknownWorkerStartOutcome,
   type WorkerSetupReceipt
 } from './orchestration-worker-topology'
 import type { OrchestrationWorkerLaunchReceipt } from './orchestration-worker-launch-preferences'
+
+export type WorkerStartFailureReceipt = {
+  runId: string
+  taskId: string
+  dispatchId: string
+  state: WorkerDispatchState | 'outcome_unknown'
+  stage: string
+  failedStage: string
+  lastError: string
+  setup: WorkerSetupReceipt
+  launch: OrchestrationWorkerLaunchReceipt
+  effects: unknown[]
+  residualResources: unknown[]
+  nextCommands?: string[]
+}
 
 export function failWorkerStartWithReceipt(args: {
   db: OrchestrationDb
@@ -14,7 +30,7 @@ export function failWorkerStartWithReceipt(args: {
   error: unknown
   setup: WorkerSetupReceipt
   launch: OrchestrationWorkerLaunchReceipt
-}): unknown {
+}): WorkerStartFailureReceipt {
   const reason = args.error instanceof Error ? args.error.message : String(args.error)
   const unknown = isUnknownWorkerStartOutcome(args.error, args.failedStage)
   const worker = unknown

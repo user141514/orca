@@ -109,15 +109,18 @@ export async function createWorkerWorktree(args: {
   db: OrchestrationDb
   dispatchId: string
   requestedWorktree: string
-  coordinatorWorktree: Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>
-  params: {
+  coordinatorWorktree: Pick<
+    Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>,
+    'id' | 'repoId'
+  >
+  creation: {
     repo?: string
-    name?: string
+    name: string
     baseBranch?: string
     displayName?: string
     comment?: string
     setup?: 'run' | 'skip' | 'inherit'
-    from: string
+    callerTerminalHandle?: string
   }
   agent: TuiAgent
   launchPreferences?: AgentLaunchPreferences
@@ -127,15 +130,16 @@ export async function createWorkerWorktree(args: {
   terminalHandle: string
   setupReceipt: WorkerSetupReceipt
 }> {
-  const { runtime, db, dispatchId, requestedWorktree, coordinatorWorktree, params, effects } = args
-  const setupDecision = params.setup ?? 'run'
+  const { runtime, db, dispatchId, requestedWorktree, coordinatorWorktree, creation, effects } =
+    args
+  const setupDecision = creation.setup ?? 'run'
   db.recordWorkerStage({ dispatchId, stage: 'worktree_creating', effects })
   const created = await runtime.createManagedWorktree({
-    repoSelector: params.repo ?? coordinatorWorktree.repoId,
-    name: params.name as string,
-    baseBranch: params.baseBranch,
-    displayName: params.displayName,
-    comment: params.comment,
+    repoSelector: creation.repo ?? coordinatorWorktree.repoId,
+    name: creation.name,
+    baseBranch: creation.baseBranch,
+    displayName: creation.displayName,
+    comment: creation.comment,
     // setupDecision runs setup without the legacy runHooks activation side effect.
     runHooks: false,
     setupDecision,
@@ -148,7 +152,7 @@ export async function createWorkerWorktree(args: {
     lineage: {
       parentWorktree: requestedWorktree === 'new-child' ? coordinatorWorktree.id : undefined,
       noParent: requestedWorktree === 'new-top-level',
-      callerTerminalHandle: params.from
+      callerTerminalHandle: creation.callerTerminalHandle
     }
   })
   const terminalHandle = created.startupTerminal?.handle
@@ -167,7 +171,7 @@ export async function createWorkerWorktree(args: {
   const setupReceipt = {
     requested: setupDecision,
     effective: setupDecision,
-    source: params.setup ? 'explicit_request' : 'orchestration_default',
+    source: creation.setup ? 'explicit_request' : 'orchestration_default',
     hookFound: created.setupReceipt?.hookFound ?? false,
     startupPolicy: created.setupReceipt?.startupPolicy ?? 'start-immediately',
     state: created.setupReceipt?.state ?? 'not_configured'

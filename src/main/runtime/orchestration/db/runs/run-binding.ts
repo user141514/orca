@@ -121,7 +121,8 @@ export function bindRun(
     if (
       (params.takeoverLegacy && !takeoverAlreadyApplied) ||
       !sameBinding ||
-      run.coordinator_handle !== params.coordinatorHandle
+      run.coordinator_handle !== params.coordinatorHandle ||
+      run.coordination_consumer_id !== null
     ) {
       if (adoptedRun && (params.takeoverLegacy || !activeLegacyAssignment)) {
         if (
@@ -136,7 +137,7 @@ export function bindRun(
       this.db
         .prepare(
           `UPDATE runs
-           SET coordinator_handle = ?, coordinator_pane_key = ?,
+           SET coordinator_handle = ?, coordinator_pane_key = ?, coordination_consumer_id = NULL,
                consumer_generation = consumer_generation + 1,
                updated_at = datetime('now')
            WHERE id = ?`

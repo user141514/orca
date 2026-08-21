@@ -33,7 +33,9 @@ import type { QuestionThreadsMethods } from './questions/question-threads'
 import type { OrchestrationResetMethods } from './reset/orchestration-reset'
 import type { RunBindingMethods } from './runs/run-binding'
 import type { RunCoordinatorMailRoutingMethods } from './runs/run-coordinator-mail-routing'
+import type { RunConsumerMethods } from './runs/run-consumer'
 import type { RunCreateMethods } from './runs/run-create'
+import type { RunControlPolicyMethods } from './runs/run-control-policy'
 import type { RunDeliveryMethods } from './runs/run-delivery'
 import type { RunLookupMethods } from './runs/run-lookup'
 import type { LegacyCoordinatorMailTakeoverMethods } from './runs/legacy-coordinator-mail-takeover'
@@ -77,9 +79,11 @@ export type OrchestrationDbMethods = CreateTablesMethods &
   LegacyQuestionLookupMethods &
   LegacyReplyOperationMethods &
   RunCreateMethods &
+  RunControlPolicyMethods &
   RunBindingMethods &
   RunLookupMethods &
   RunCoordinatorMailRoutingMethods &
+  RunConsumerMethods &
   LegacyCoordinatorMailTakeoverMethods &
   RunDeliveryMethods &
   MessageInsertMethods &

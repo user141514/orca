@@ -1,10 +1,11 @@
 import type Database from '../../../../sqlite/sync-database'
-import type { TaskStatus, TaskRow } from '../../types'
+import type { TaskExecutionDescriptor, TaskStatus, TaskRow } from '../../types'
 import { buildOrchestrationTaskDisplayMetadata } from '../../../../../shared/orchestration-task-display'
 import { LEGACY_RUN_ID } from '../contract-constants'
 import { generateId } from '../generated-id'
 import type { TaskRuntimeLineageRow } from '../run-list-page'
 import type { OrchestrationDb } from '../orchestration-db'
+import type { RunCoordinationLease } from '../runs/run-consumer'
 
 // ── Tasks ──
 
@@ -20,6 +21,7 @@ export function createTask(
     createdByPaneKey?: string
     createdByProcessIncarnation?: string
     createdByRunGeneration?: number
+    execution?: TaskExecutionDescriptor
     runId?: string
   }
 ): TaskRow {
@@ -49,9 +51,9 @@ export function createTask(
       `INSERT INTO tasks (
          id, run_id, parent_id, created_by_terminal_handle, created_by_pane_key,
          created_by_process_incarnation, created_by_run_generation,
-         task_title, display_name, spec, status, deps
+         task_title, display_name, spec, execution_spec, status, deps
        ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
          CASE WHEN EXISTS (
            SELECT 1
            FROM json_each(?) requested
@@ -74,11 +76,36 @@ export function createTask(
       display.taskTitle || null,
       display.displayName || null,
       task.spec,
+      task.execution ? JSON.stringify(task.execution) : null,
       depsJson,
       runId,
       depsJson
     )
   return this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow
+}
+
+export function createTaskForConsumer(
+  this: OrchestrationDb,
+  lease: RunCoordinationLease,
+  task: {
+    spec: string
+    taskTitle?: string
+    displayName?: string
+    deps?: string[]
+    parentId?: string
+    execution?: TaskExecutionDescriptor
+  }
+): TaskRow {
+  this.db.exec('BEGIN IMMEDIATE')
+  try {
+    this.requireRunConsumer(lease)
+    const created = this.createTask({ ...task, runId: lease.runId })
+    this.db.exec('COMMIT')
+    return created
+  } catch (error) {
+    this.db.exec('ROLLBACK')
+    throw error
+  }
 }
 
 // Why: return the active creator Dispatch proof with the Task read; runtime still owns pane/process currency.
@@ -214,6 +241,7 @@ export function promoteReadyTasks(this: OrchestrationDb, completedTaskId: string
 
 export type TaskStoreMethods = {
   createTask: typeof createTask
+  createTaskForConsumer: typeof createTaskForConsumer
   getTask: typeof getTask
   listTasks: typeof listTasks
   listTasksWithDispatch: typeof listTasksWithDispatch
@@ -223,6 +251,7 @@ export type TaskStoreMethods = {
 export function attachTaskStore(ctor: { prototype: object }): void {
   Object.assign(ctor.prototype, {
     createTask,
+    createTaskForConsumer,
     getTask,
     listTasks,
     listTasksWithDispatch,

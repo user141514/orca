@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_title    TEXT,
   display_name  TEXT,
   spec          TEXT NOT NULL,
+  execution_spec TEXT,
   status        TEXT NOT NULL DEFAULT 'pending'
     CHECK(status IN (
       'pending', 'ready', 'dispatched',

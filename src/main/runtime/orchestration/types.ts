@@ -19,6 +19,11 @@ export type MessageDeliveryContract = 'legacy_direct' | 'current_delivery' | 'au
 
 export type TaskStatus = 'pending' | 'ready' | 'dispatched' | 'completed' | 'failed' | 'blocked'
 
+export type TaskExecutionDescriptor = {
+  backend: string
+  config?: unknown
+}
+
 export type DispatchStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'circuit_broken'
 
 export type WorkerReportOutcome = 'succeeded' | 'failed'
@@ -46,6 +51,7 @@ export type RunRow = {
   home_database: string
   coordinator_handle: string | null
   coordinator_pane_key: string | null
+  coordination_consumer_id: string | null
   consumer_generation: number
   legacy: number
   created_at: string
@@ -254,6 +260,7 @@ export type TaskRow = {
   task_title: string | null
   display_name: string | null
   spec: string
+  execution_spec: string | null
   status: TaskStatus
   deps: string
   result: string | null

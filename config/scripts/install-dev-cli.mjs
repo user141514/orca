@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-// Symlinks the orca-dev wrapper into /usr/local/bin so the dev CLI is
-// available globally after `pnpm run build:cli`.
-import { existsSync, lstatSync, readlinkSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+// Installs the orca-dev wrapper on PATH after `pnpm run build:cli`.
+// Prefer the traditional global location, but fall back to the user-local bin
+// so unprivileged development checkouts work without sudo.
+import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 
 const scriptDir = import.meta.dirname
 const source = path.join(scriptDir, 'orca-dev.mjs')
 
-const commandPath =
-  process.platform === 'darwin' || process.platform === 'linux' ? '/usr/local/bin/orca-dev' : null
+const commandPaths =
+  process.platform === 'darwin' || process.platform === 'linux'
+    ? ['/usr/local/bin/orca-dev', path.join(homedir(), '.local', 'bin', 'orca-dev')]
+    : []
 
-if (!commandPath) {
-  console.log('[orca-dev] Skipping global symlink (unsupported platform).')
+if (commandPaths.length === 0) {
+  console.log('[orca-dev] Skipping CLI symlink (unsupported platform).')
   process.exit(0)
 }
 
@@ -27,23 +30,32 @@ function isOwnedByUs(target) {
   }
 }
 
-if (existsSync(commandPath)) {
-  if (isOwnedByUs(commandPath)) {
-    console.log(`[orca-dev] ${commandPath} already points to dev CLI.`)
-    process.exit(0)
+for (const commandPath of commandPaths) {
+  if (existsSync(commandPath)) {
+    if (isOwnedByUs(commandPath)) {
+      console.log(`[orca-dev] ${commandPath} already points to dev CLI.`)
+      process.exit(0)
+    }
+    console.warn(`[orca-dev] ${commandPath} exists and is not Orca's dev CLI; trying fallback.`)
+    continue
   }
-  console.error(
-    `[orca-dev] ${commandPath} exists but is not our symlink. Remove it manually if you want the dev CLI installed globally.`
-  )
-  process.exit(0)
+
+  try {
+    mkdirSync(path.dirname(commandPath), { recursive: true })
+    symlinkSync(source, commandPath)
+    console.log(`[orca-dev] Symlinked ${commandPath} → ${source}`)
+    process.exit(0)
+  } catch (error) {
+    const code = error && typeof error === 'object' ? error.code : undefined
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+      console.log(`[orca-dev] Cannot write ${commandPath}; trying fallback.`)
+      continue
+    }
+    throw error
+  }
 }
 
-try {
-  execFileSync('ln', ['-s', source, commandPath], { stdio: 'inherit' })
-  console.log(`[orca-dev] Symlinked ${commandPath} → ${source}`)
-} catch {
-  console.log(
-    `[orca-dev] Could not create ${commandPath} (permission denied). Run once with:\n` +
-      `  sudo ln -s ${source} ${commandPath}`
-  )
-}
+console.log(
+  '[orca-dev] Could not install an orca-dev command on PATH. Run the wrapper directly:\n' +
+    `  ${source}`
+)

@@ -44,6 +44,42 @@ import { COMMAND_SPECS, main } from './index'
 import { GLOBAL_FLAGS, specPaths } from './args'
 import { okFixture, queueFixtures } from './test-fixtures'
 
+describe('root mission entry', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    callMock.mockReset()
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+  })
+
+  it('dispatches quoted natural language through mission.start in the enclosing worktree', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_worktrees', {
+        worktrees: [{ id: 'repo::worktree', path: '/tmp/repo', name: 'repo' }]
+      }),
+      okFixture('req_mission', {
+        mission: 'refactor login safely',
+        mode: 'single-agent',
+        agent: 'codex',
+        terminal: { handle: 'term_mission' }
+      })
+    )
+
+    await main(['refactor login safely'], '/tmp/repo/src')
+
+    expect(callMock).toHaveBeenNthCalledWith(1, 'worktree.list', { limit: 10_000 })
+    expect(callMock).toHaveBeenNthCalledWith(2, 'mission.start', {
+      text: 'refactor login safely',
+      worktree: 'id:repo::worktree'
+    })
+  })
+})
+
 describe('COMMAND_SPECS collision check', () => {
   it('has no duplicate command or alias paths', () => {
     // Why: first-match resolution would silently shadow duplicate aliases.

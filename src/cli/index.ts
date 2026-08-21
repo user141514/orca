@@ -12,6 +12,7 @@ import { dispatch } from './dispatch'
 import { resolveHostFlagEnvironmentId } from './execution-host-flag'
 import { reportCliError } from './format'
 import { printHelp } from './help'
+import { normalizeRootMissionArgs } from './mission-entry'
 import type { RuntimeClient } from './runtime-client'
 import { COMMAND_SPECS } from './specs'
 
@@ -62,6 +63,7 @@ export async function main(
     await runClaudeTeams(argv.slice(1), cwd)
     return
   }
+  argv = normalizeRootMissionArgs(argv)
   const parsed = normalizeCommandPositionals(COMMAND_SPECS, parseArgs(argv, COMMAND_PATHS))
   const helpPath = resolveHelpPath(parsed)
   if (helpPath !== null) {

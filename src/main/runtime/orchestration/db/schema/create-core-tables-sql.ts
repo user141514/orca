@@ -6,12 +6,20 @@ CREATE TABLE IF NOT EXISTS runs (
   id                    TEXT PRIMARY KEY,
   objective             TEXT NOT NULL,
   home_database         TEXT NOT NULL DEFAULT 'this_database',
-  coordinator_handle    TEXT,
-  coordinator_pane_key  TEXT,
-  consumer_generation   INTEGER NOT NULL DEFAULT 0,
+  coordinator_handle         TEXT,
+  coordinator_pane_key       TEXT,
+  coordination_consumer_id   TEXT,
+  consumer_generation        INTEGER NOT NULL DEFAULT 0,
   legacy                INTEGER NOT NULL DEFAULT 0,
   created_at            TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS run_control_policies (
+  run_id           TEXT PRIMARY KEY,
+  max_concurrency  INTEGER NOT NULL CHECK(max_concurrency >= 1),
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS messages (

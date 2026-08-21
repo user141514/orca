@@ -29,6 +29,7 @@ import {
 } from './orchestration-recipient-routing'
 import { resolveRunScope } from './orchestration-run-scope'
 import { ORCHESTRATION_RUN_METHODS } from './orchestration-runs'
+import { ORCHESTRATION_PLAN_METHODS } from './orchestration-plans'
 import { ORCHESTRATION_WORKER_METHODS } from './orchestration-worker-methods'
 import { ORCHESTRATION_FEDERATION_METHODS } from './orchestration-federation-methods'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
@@ -436,6 +437,7 @@ function rejectFederatedExplicitTarget(params: { to?: string; run?: string }): v
 
 export const ORCHESTRATION_METHODS: RpcMethod[] = [
   ...ORCHESTRATION_RUN_METHODS,
+  ...ORCHESTRATION_PLAN_METHODS,
   ...ORCHESTRATION_WORKER_METHODS,
   ...ORCHESTRATION_FEDERATION_METHODS,
   defineMethod({

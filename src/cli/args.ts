@@ -220,6 +220,7 @@ export function isCommandGroup(commandPath: string[]): boolean {
         'dialog',
         'storage',
         'orchestration',
+        'mission',
         'computer',
         'emulator',
         'agent',

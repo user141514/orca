@@ -4,6 +4,7 @@ import { ensureMutationReceiptCapacity } from '../../mutation-receipt-capacity'
 import { CURRENT_CONTRACT_VERSION } from '../contract-constants'
 import { generateId } from '../generated-id'
 import type { OrchestrationDb } from '../orchestration-db'
+import type { RunCoordinationLease } from '../runs/run-consumer'
 
 export function createStartingWorkerDispatch(
   this: OrchestrationDb,
@@ -13,6 +14,7 @@ export function createStartingWorkerDispatch(
     launchTokenHash?: string
     retryOf?: string
     runtimeEpoch?: string
+    coordinationLease?: RunCoordinationLease
     federation?: {
       environmentId: string
       environmentName: string
@@ -29,6 +31,9 @@ export function createStartingWorkerDispatch(
 ): { dispatch: DispatchContextRow; worker: WorkerDispatchRow } {
   this.db.exec('BEGIN IMMEDIATE')
   try {
+    if (params.coordinationLease) {
+      this.requireRunConsumer(params.coordinationLease)
+    }
     if (params.mutationReceipt) {
       const receipt = params.mutationReceipt
       const existing = this.getMutationReceipt(receipt.callerFingerprint, receipt.requestId)
@@ -56,6 +61,12 @@ export function createStartingWorkerDispatch(
     const task = this.getTask(params.taskId)
     if (!task) {
       throw new OrchestrationError('task_not_found', `Task ${params.taskId} was not found.`)
+    }
+    if (params.coordinationLease && task.run_id !== params.coordinationLease.runId) {
+      throw new OrchestrationError(
+        'task_not_found',
+        `Task ${params.taskId} was not found in Run ${params.coordinationLease.runId}.`
+      )
     }
     if (params.retryOf) {
       const prior = this.getDispatchContextById(params.retryOf)

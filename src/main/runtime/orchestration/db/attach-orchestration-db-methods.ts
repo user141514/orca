@@ -33,7 +33,9 @@ import { attachQuestionThreads } from './questions/question-threads'
 import { attachOrchestrationReset } from './reset/orchestration-reset'
 import { attachRunBinding } from './runs/run-binding'
 import { attachRunCoordinatorMailRouting } from './runs/run-coordinator-mail-routing'
+import { attachRunConsumer } from './runs/run-consumer'
 import { attachRunCreate } from './runs/run-create'
+import { attachRunControlPolicy } from './runs/run-control-policy'
 import { attachRunDelivery } from './runs/run-delivery'
 import { attachRunLookup } from './runs/run-lookup'
 import { attachLegacyCoordinatorMailTakeover } from './runs/legacy-coordinator-mail-takeover'
@@ -78,9 +80,11 @@ export function attachOrchestrationDbMethods(ctor: { prototype: object }): void 
   attachLegacyQuestionLookup(ctor)
   attachLegacyReplyOperation(ctor)
   attachRunCreate(ctor)
+  attachRunControlPolicy(ctor)
   attachRunBinding(ctor)
   attachRunLookup(ctor)
   attachRunCoordinatorMailRouting(ctor)
+  attachRunConsumer(ctor)
   attachLegacyCoordinatorMailTakeover(ctor)
   attachRunDelivery(ctor)
   attachMessageInsert(ctor)

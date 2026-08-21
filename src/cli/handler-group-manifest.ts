@@ -18,6 +18,11 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
     load: async () => (await import('./handlers/core.js')).CORE_HANDLERS
   },
   {
+    name: 'mission',
+    keys: ['mission start'],
+    load: async () => (await import('./handlers/mission.js')).MISSION_HANDLERS
+  },
+  {
     name: 'account',
     keys: ['account add', 'account list'],
     load: async () => (await import('./handlers/account.js')).ACCOUNT_HANDLERS
@@ -103,6 +108,8 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
   {
     name: 'orchestration',
     keys: [
+      'orchestration plan-create',
+      'orchestration plan-run',
       'orchestration run-create',
       'orchestration run-use',
       'orchestration run-current',
