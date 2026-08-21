@@ -44,4 +44,33 @@ describe('mission CLI handler', () => {
       agent: 'claude'
     })
   })
+
+  it('prints the Run when the mission is routed to orchestration', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: {
+          worktrees: [{ id: 'repo::worktree', path: '/tmp/repo', name: 'repo' }]
+        }
+      })
+      .mockResolvedValueOnce({
+        result: {
+          mission: 'parallel review',
+          mode: 'orchestration',
+          agent: 'pi',
+          runId: 'run_123',
+          state: 'running'
+        }
+      })
+    const client = { call, isRemote: false } as unknown as RuntimeClient
+
+    await MISSION_HANDLERS['mission start']({
+      flags: new Map([['text', 'parallel review']]),
+      client,
+      cwd: '/tmp/repo',
+      json: false
+    })
+
+    expect(log.mock.calls.flat().join('\n')).toContain('Mission run run_123 started with pi')
+  })
 })

@@ -104,7 +104,15 @@ export type RemoteCommitMessageExecResult = {
   spawnError?: string
 }
 
-export type TextGenerationOperation = 'commit-message' | 'pull-request-fields' | 'branch-name'
+export type TextGenerationOperation =
+  | 'commit-message'
+  | 'pull-request-fields'
+  | 'branch-name'
+  | 'mission-plan'
+
+export type GenerateTextResult =
+  | { success: true; text: string; agentLabel?: string }
+  | { success: false; error: string; canceled?: boolean }
 
 export type CommitMessageGenerationTarget =
   | { kind: 'local'; cwd: string; env?: NodeJS.ProcessEnv; wslDistro?: string }
@@ -1107,6 +1115,34 @@ function formatCommitMessageGenerationResult(
     message: trimGeneratedCommitMessage(commitMessage.message),
     agentLabel: result.agentLabel
   }
+}
+
+export async function generateTextFromPrompt(
+  prompt: string,
+  params: GenerateCommitMessageParams,
+  target: CommitMessageGenerationTarget,
+  operation: TextGenerationOperation = 'mission-plan',
+  options: { useAgentDefaultModel?: boolean } = {}
+): Promise<GenerateTextResult> {
+  const planned = planCommitMessageGeneration(
+    {
+      ...params,
+      backslash: commandBackslashMode(target),
+      useAgentDefaultModel: options.useAgentDefaultModel
+    },
+    prompt
+  )
+  if (!planned.ok) {
+    return { success: false, error: planned.error }
+  }
+
+  const result =
+    target.kind === 'remote'
+      ? await runRemotePlan(planned.plan, target, 'text', operation)
+      : await runLocalPlanForAgent(params.agentId, planned.plan, target, 'text', operation)
+  return result.success
+    ? { success: true, text: result.rawOutput, agentLabel: result.agentLabel }
+    : { success: false, error: result.error, canceled: result.canceled }
 }
 
 export async function generateCommitMessageFromContext(

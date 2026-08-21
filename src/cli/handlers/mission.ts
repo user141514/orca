@@ -14,22 +14,31 @@ export const MISSION_HANDLERS: Record<string, CommandHandler> = {
         'Mission start requires an Orca-managed workspace. Run it from inside a managed project or pass --worktree.'
       )
     }
-    const result = await client.call<{
-      mission: string
-      mode: 'single-agent'
-      agent: string
-      terminal: { handle: string }
-    }>('mission.start', {
+    const result = await client.call<
+      | {
+          mission: string
+          mode: 'single-agent'
+          agent: string
+          terminal: { handle: string }
+        }
+      | {
+          mission: string
+          mode: 'orchestration'
+          agent: string
+          runId: string
+          state: 'running'
+        }
+    >('mission.start', {
       text,
       worktree,
       ...(getOptionalStringFlag(flags, 'agent')
         ? { agent: getOptionalStringFlag(flags, 'agent') }
         : {})
     })
-    printResult(
-      result,
-      json,
-      (value) => `Mission started in ${value.terminal.handle} with ${value.agent}: ${value.mission}`
+    printResult(result, json, (value) =>
+      value.mode === 'orchestration'
+        ? `Mission run ${value.runId} started with ${value.agent}: ${value.mission}`
+        : `Mission started in ${value.terminal.handle} with ${value.agent}: ${value.mission}`
     )
   }
 }

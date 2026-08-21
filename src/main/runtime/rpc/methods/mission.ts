@@ -1,10 +1,17 @@
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { getCommitMessageAgentSpec } from '../../../../shared/commit-message-agent-spec'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
 import type { TuiAgent } from '../../../../shared/tui-agent'
 import { isTuiAgentEnabled, pickTuiAgent } from '../../../../shared/tui-agent-selection'
 import { detectInstalledAgentsWithShellPathHydration } from '../../../ipc/preflight'
+import { OrchestrationControlPlane } from '../../orchestration/orchestration-control-plane'
+import { OrchestrationExecutorRouter } from '../../orchestration/orchestration-executor-router'
+import { RuntimeOrchestrationRunner } from '../../orchestration/orchestration-runtime-runner'
+import { buildMissionPlanningPrompt, parseMissionPlan } from '../../mission/mission-plan'
 import { defineMethod, type RpcMethod } from '../core'
 import { requiredString } from '../schemas'
+import { LocalWorkerExecutor } from './orchestration-local-worker-executor'
 
 class MissionError extends Error {
   constructor(
@@ -77,7 +84,72 @@ export const MISSION_METHODS: RpcMethod[] = [
         )
       }
 
-      const terminal = await runtime.createTerminal(params.worktree, {
+      const workspace = await runtime.showManagedTerminalWorkspace(params.worktree)
+      const plannerSpec = getCommitMessageAgentSpec(agent)
+      let missionPlan: ReturnType<typeof parseMissionPlan> = { mode: 'single-agent' }
+      if (plannerSpec) {
+        const planning = await runtime.generateRuntimeText(
+          `id:${workspace.id}`,
+          buildMissionPlanningPrompt(params.text),
+          {
+            agentId: agent,
+            model: plannerSpec.defaultModelId,
+            agentCommandOverride: settings.agentCmdOverrides?.[agent]
+          },
+          'mission-plan',
+          { useAgentDefaultModel: true }
+        )
+        if (!planning.success) {
+          throw new MissionError('mission_planner_failed', planning.error)
+        }
+
+        try {
+          missionPlan = parseMissionPlan(planning.text)
+        } catch (error) {
+          throw new MissionError(
+            'mission_planner_failed',
+            error instanceof Error ? error.message : String(error)
+          )
+        }
+      }
+      if (missionPlan.mode === 'orchestration') {
+        const db = runtime.getOrchestrationDb()
+        const consumerId = `mission:${randomUUID()}`
+        const control = new OrchestrationControlPlane(db, consumerId)
+        const materialized = control.startPlan({
+          objective: missionPlan.objective,
+          maxConcurrency: missionPlan.maxConcurrency,
+          tasks: missionPlan.tasks.map((task) => ({
+            key: task.key,
+            spec: task.spec,
+            deps: task.deps,
+            execution: {
+              backend: 'local-worker',
+              config: {
+                worktreeId: workspace.id,
+                agent,
+                timeoutMs: 60_000
+              }
+            }
+          }))
+        })
+        const executor = new OrchestrationExecutorRouter(db, {
+          'local-worker': new LocalWorkerExecutor(runtime)
+        })
+        const runner = new RuntimeOrchestrationRunner(runtime, consumerId, executor)
+        void runner.runExisting(materialized.run.id).catch((error: unknown) => {
+          console.error(`[mission] Run ${materialized.run.id} coordinator failed:`, error)
+        })
+        return {
+          mission: params.text,
+          mode: 'orchestration' as const,
+          agent,
+          runId: materialized.run.id,
+          state: 'running' as const
+        }
+      }
+
+      const terminal = await runtime.createTerminal(`id:${workspace.id}`, {
         startupAgent: agent,
         title: 'Mission'
       })

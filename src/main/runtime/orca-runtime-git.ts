@@ -66,11 +66,14 @@ import {
   discoverCommitMessageModelsRemote,
   generateCommitMessageFromContext,
   generatePullRequestFieldsFromContext,
+  generateTextFromPrompt,
   resolveCommitMessageSettings,
   type CommitMessageGenerationTarget,
   type DiscoverCommitMessageModelsResult,
   type GenerateCommitMessageResult,
-  type GeneratePullRequestFieldsResult
+  type GeneratePullRequestFieldsResult,
+  type GenerateTextResult,
+  type TextGenerationOperation
 } from '../text-generation/commit-message-text-generation'
 import type {
   CommitMessageAgentEnvironmentResolvers,
@@ -629,6 +632,51 @@ export class RuntimeGitCommands {
       return provider.commit(target.worktree.path, message)
     }
     return commitChanges(target.worktree.path, message, localGitOptionsForTarget(target))
+  }
+
+  async generateRuntimeText(
+    worktreeSelector: string,
+    prompt: string,
+    params: ResolvedSourceControlAiGenerationParams,
+    operation: TextGenerationOperation = 'mission-plan',
+    options: { useAgentDefaultModel?: boolean } = {}
+  ): Promise<GenerateTextResult> {
+    const target = await this.host.resolveRuntimeGitTarget(worktreeSelector)
+    const provider = target.connectionId ? getSshGitProvider(target.connectionId) : null
+    if (target.connectionId) {
+      if (!provider) {
+        return { success: false, error: SSH_GIT_PROVIDER_UNAVAILABLE_MESSAGE }
+      }
+      return generateTextFromPrompt(
+        prompt,
+        params,
+        {
+          kind: 'remote',
+          cwd: target.worktree.path,
+          execute: (plan, cwd, timeoutMs, requestedOperation) =>
+            provider.executeCommitMessagePlan(plan, cwd, timeoutMs, requestedOperation),
+          missingBinaryLocation: 'remote PATH'
+        },
+        operation,
+        options
+      )
+    }
+
+    const localEnv = await prepareLocalCommitMessageAgentEnv(
+      params.agentId,
+      this.host.getCommitMessageAgentEnvironment?.(),
+      localAgentRuntimeTargetForTarget(target)
+    )
+    if (!localEnv.ok) {
+      return { success: false, error: localEnv.error }
+    }
+    return generateTextFromPrompt(
+      prompt,
+      params,
+      localTextGenerationTargetForTarget(target, localEnv.env),
+      operation,
+      options
+    )
   }
 
   async generateRuntimeCommitMessage(

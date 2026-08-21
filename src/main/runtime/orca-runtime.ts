@@ -10324,6 +10324,8 @@ export class OrcaRuntimeService {
   commitRuntimeGit: RuntimeGitCommands['commitRuntimeGit'] = this.gitCommands.commitRuntimeGit.bind(
     this.gitCommands
   )
+  generateRuntimeText: RuntimeGitCommands['generateRuntimeText'] =
+    this.gitCommands.generateRuntimeText.bind(this.gitCommands)
   generateRuntimeCommitMessage: RuntimeGitCommands['generateRuntimeCommitMessage'] =
     this.gitCommands.generateRuntimeCommitMessage.bind(this.gitCommands)
   discoverRuntimeCommitMessageModels: RuntimeGitCommands['discoverRuntimeCommitMessageModels'] =
