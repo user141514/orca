@@ -18,10 +18,12 @@ import { VM_COMMAND_SPECS } from './vm'
 import { SKILL_COMMAND_SPECS } from './skills'
 import { ARTIFACT_COMMAND_SPECS } from './artifacts'
 import { MISSION_COMMAND_SPECS } from './mission'
+import { COLLABORATION_COMMAND_SPECS } from './collaboration'
 
 export const COMMAND_SPECS: CommandSpec[] = [
   ...CORE_COMMAND_SPECS,
   ...MISSION_COMMAND_SPECS,
+  ...COLLABORATION_COMMAND_SPECS,
   ...ARTIFACT_COMMAND_SPECS,
   ...ACCOUNT_COMMAND_SPECS,
   ...PROJECT_COMMAND_SPECS,

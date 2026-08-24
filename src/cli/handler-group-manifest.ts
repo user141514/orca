@@ -23,6 +23,11 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
     load: async () => (await import('./handlers/mission.js')).MISSION_HANDLERS
   },
   {
+    name: 'collaboration',
+    keys: ['collaboration checkpoint', 'collaboration checkpoint-ack'],
+    load: async () => (await import('./handlers/collaboration.js')).COLLABORATION_HANDLERS
+  },
+  {
     name: 'account',
     keys: ['account add', 'account list'],
     load: async () => (await import('./handlers/account.js')).ACCOUNT_HANDLERS
