@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { TuiAgent } from '../../../shared/tui-agent'
 import { buildCollaborationStepInput } from '../collaboration/collaboration-context'
 import type { CollaborationExecutionPort } from '../collaboration/collaboration-execution-port'
+import { CollaborationRuntimeSession } from '../collaboration/collaboration-runtime-session'
 import type { CollaborationPlan, CollaborationRunReceipt } from '../collaboration/types'
+import {
+  registerCollaborationRuntimeSession,
+  unregisterCollaborationRuntimeSession
+} from '../collaboration-runtime/collaboration-runtime-registry'
 import type { OrcaRuntimeService } from '../orca-runtime'
 import { OrchestrationControlPlane } from '../orchestration/orchestration-control-plane'
 import { OrchestrationExecutorRouter } from '../orchestration/orchestration-executor-router'
@@ -41,14 +46,34 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
         }
       }))
     })
+    const taskIdsByStepKey = Object.fromEntries(
+      Object.entries(materialized.tasksByKey).map(([stepKey, task]) => [stepKey, task.id])
+    )
+    registerCollaborationRuntimeSession(
+      this.runtime,
+      materialized.run.id,
+      new CollaborationRuntimeSession({
+        plan,
+        taskIdsByStepKey,
+        admissionByStepKey: {}
+      })
+    )
     const resolveTaskInput = buildTaskInputResolver(plan, materialized.tasksByKey)
     const executor = new OrchestrationExecutorRouter(db, {
       'local-worker': new LocalWorkerExecutor(this.runtime, { resolveTaskInput })
     })
     const runner = new RuntimeOrchestrationRunner(this.runtime, consumerId, executor)
-    void runner.runExisting(materialized.run.id).catch((error: unknown) => {
-      console.error(`[mission] Run ${materialized.run.id} coordinator failed:`, error)
-    })
+    void runner
+      .runExisting(materialized.run.id)
+      .then((result) => {
+        if (result.state === 'completed') {
+          unregisterCollaborationRuntimeSession(this.runtime, materialized.run.id)
+        }
+      })
+      .catch((error: unknown) => {
+        unregisterCollaborationRuntimeSession(this.runtime, materialized.run.id)
+        console.error(`[mission] Run ${materialized.run.id} coordinator failed:`, error)
+      })
     return { runId: materialized.run.id }
   }
 }

@@ -41,6 +41,7 @@ import { UPDATER_METHODS } from './updater'
 import { AGENT_SESSION_METHODS } from './agent-session'
 import { ARTIFACT_METHODS } from './artifacts'
 import { MISSION_METHODS } from './mission'
+import { COLLABORATION_METHODS } from './collaboration'
 
 // Why: a flat manifest keeps registration order explicit and provides one
 // grep-point for "what methods does the RPC server expose?" — useful when
@@ -48,6 +49,7 @@ import { MISSION_METHODS } from './mission'
 export const ALL_RPC_METHODS: readonly RpcAnyMethod[] = [
   ...STATUS_METHODS,
   ...MISSION_METHODS,
+  ...COLLABORATION_METHODS,
   ...AI_VAULT_METHODS,
   ...ARTIFACT_METHODS,
   ...AUTOMATION_METHODS,

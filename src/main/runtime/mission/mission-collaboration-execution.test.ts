@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CollaborationPlan } from '../collaboration/types'
+import { getCollaborationRuntimeSession } from '../collaboration-runtime/collaboration-runtime-registry'
 import { OrcaRuntimeService } from '../orca-runtime'
 import { OrchestrationDb } from '../orchestration/db'
 import { RuntimeOrchestrationRunner } from '../orchestration/orchestration-runtime-runner'
@@ -20,7 +21,7 @@ describe('MissionCollaborationExecution', () => {
     runtime.setOrchestrationDb(db)
     const runExisting = vi
       .spyOn(RuntimeOrchestrationRunner.prototype, 'runExisting')
-      .mockImplementation(async (runId) => ({ runId, state: 'completed' }))
+      .mockImplementation(async (runId) => ({ runId, state: 'blocked' }))
     const execution = new MissionCollaborationExecution(runtime, 'repo::worktree', 'codex')
     const plan: CollaborationPlan = {
       objective: 'Draft then review',
@@ -33,6 +34,7 @@ describe('MissionCollaborationExecution', () => {
 
     const receipt = await execution.start(plan)
 
+    expect(getCollaborationRuntimeSession(runtime, receipt.runId)).toBeDefined()
     expect(runExisting).toHaveBeenCalledWith(receipt.runId)
     const tasks = db.listTasks({ runId: receipt.runId })
     const bySpec = new Map(tasks.map((task) => [task.spec, task]))
@@ -48,6 +50,32 @@ describe('MissionCollaborationExecution', () => {
         }
       })
     }
+  })
+
+  it('unregisters the collaboration session when the orchestration run completes', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    let completeRun: ((value: { runId: string; state: 'completed' }) => void) | undefined
+    vi.spyOn(RuntimeOrchestrationRunner.prototype, 'runExisting').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completeRun = resolve
+        })
+    )
+    const execution = new MissionCollaborationExecution(runtime, 'repo::worktree', 'codex')
+
+    const receipt = await execution.start({
+      objective: 'complete and clean up',
+      maxConcurrency: 1,
+      steps: [{ key: 'worker', instruction: 'finish' }]
+    })
+
+    expect(getCollaborationRuntimeSession(runtime, receipt.runId)).toBeDefined()
+    completeRun?.({ runId: receipt.runId, state: 'completed' })
+    await vi.waitFor(() => {
+      expect(getCollaborationRuntimeSession(runtime, receipt.runId)).toBeUndefined()
+    })
   })
 
   it('passes selected predecessor results into the dependent worker prompt', async () => {
