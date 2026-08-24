@@ -3,6 +3,7 @@ import type { CollaborationRoutingTable } from './collaboration-routing'
 export type CollaborationMessagePriority = 'normal' | 'high' | 'urgent'
 
 export type CollaborationMessage = {
+  readonly id: string
   readonly topic: string
   readonly type: string
   readonly priority: CollaborationMessagePriority

@@ -24,6 +24,7 @@ describe('routeCollaborationMessage', () => {
     }
     const routing = buildCollaborationRoutingTable(plan)
     const message: CollaborationMessage = {
+      id: 'message-1',
       topic: '/architecture/findings',
       type: 'finding',
       priority: 'high',
@@ -46,6 +47,7 @@ describe('routeCollaborationMessage', () => {
       steps: [{ key: 'researcher', instruction: 'Investigate.' }]
     })
     const message: CollaborationMessage = {
+      id: 'message-2',
       topic: '/architecture/findings',
       type: 'finding',
       priority: 'normal',
@@ -69,6 +71,7 @@ describe('routeCollaborationMessage', () => {
       ]
     })
     const message: CollaborationMessage = {
+      id: 'message-3',
       topic: '/status',
       type: 'status',
       priority: 'urgent',
