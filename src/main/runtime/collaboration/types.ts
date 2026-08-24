@@ -3,6 +3,7 @@ export type CollaborationStep = {
   instruction: string
   dependsOn?: string[]
   contextFrom?: string[]
+  subscribesTo?: string[]
 }
 
 export type CollaborationPlan = {
