@@ -61,9 +61,13 @@ export class CollaborationMailbox {
     return selected.map(toDelivery)
   }
 
-  ack(deliveryId: string): boolean {
+  ack(deliveryId: string, expectedAttempt?: number): boolean {
     const delivery = this.deliveries.get(deliveryId)
-    if (!delivery || delivery.state !== 'in_flight') {
+    if (
+      !delivery ||
+      delivery.state !== 'in_flight' ||
+      (expectedAttempt !== undefined && delivery.deliveryAttempt !== expectedAttempt)
+    ) {
       return false
     }
     delivery.state = 'acked'

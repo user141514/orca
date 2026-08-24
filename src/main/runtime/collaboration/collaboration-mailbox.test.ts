@@ -116,6 +116,32 @@ describe('CollaborationMailbox', () => {
     })
   })
 
+  it('rejects stale acknowledgements from an expired prior delivery attempt', () => {
+    const mailbox = new CollaborationMailbox()
+    mailbox.enqueue('delivery-1', intent('consumer', message('message-1', 'retry')))
+
+    const [firstAttempt] = mailbox.claim({
+      subscriberKey: 'consumer',
+      nowMs: 1_000,
+      leaseMs: 100,
+      limit: 1
+    })
+    mailbox.releaseExpired(1_100)
+    const [secondAttempt] = mailbox.claim({
+      subscriberKey: 'consumer',
+      nowMs: 1_101,
+      leaseMs: 100,
+      limit: 1
+    })
+
+    expect(mailbox.ack('delivery-1', firstAttempt!.deliveryAttempt)).toBe(false)
+    expect(mailbox.get('delivery-1')).toMatchObject({
+      state: 'in_flight',
+      deliveryAttempt: 2
+    })
+    expect(mailbox.ack('delivery-1', secondAttempt!.deliveryAttempt)).toBe(true)
+  })
+
   it('requeues expired deliveries at the tail of the subscriber FIFO', () => {
     const mailbox = new CollaborationMailbox()
     mailbox.enqueue('delivery-1', intent('consumer', message('message-1', 'first')))
