@@ -99,6 +99,12 @@ export class CollaborationMailbox {
       .map(toDelivery)
   }
 
+  inFlight(subscriberKey: string): CollaborationDelivery[] {
+    return this.recordsForSubscriber(subscriberKey)
+      .filter((delivery) => delivery.state === 'in_flight')
+      .map(toDelivery)
+  }
+
   get(deliveryId: string): CollaborationDelivery | undefined {
     const delivery = this.deliveries.get(deliveryId)
     return delivery ? toDelivery(delivery) : undefined

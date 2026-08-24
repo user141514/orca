@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { CollaborationAdmissionPolicy } from './collaboration-admission'
 import type { CollaborationMessage } from './collaboration-message'
 import { CollaborationRuntimeSession } from './collaboration-runtime-session'
@@ -34,39 +34,111 @@ function finding(id: string, body: string): CollaborationMessage {
 }
 
 describe('CollaborationRuntimeSession', () => {
-  it('publishes through topic routing and commits subscriber context at a checkpoint', async () => {
+  it('prepares checkpoint context without acknowledging it until the task explicitly acks', () => {
     const session = new CollaborationRuntimeSession({
       plan: PLAN,
       taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
       admissionByStepKey: { consumer: POLICY }
     })
-    const message = finding('message-1', 'schema v31 is risky')
+    const message = finding('message-prepare', 'prepare me')
+    session.publish(message, () => 'delivery-prepare')
 
-    const deliveryIds = session.publish(message, ({ subscriberKey }) => `delivery-${subscriberKey}`)
-
-    expect(deliveryIds).toEqual(['delivery-consumer'])
-    const commitContext = vi.fn(async () => {})
-    await session.checkpoint({
+    const entries = session.prepareCheckpoint({
       taskId: 'task-consumer',
       nowMs: 1_000,
       leaseMs: 100,
-      limit: 10,
-      commitContext
+      limit: 10
     })
 
-    expect(commitContext).toHaveBeenCalledWith([
+    expect(entries).toEqual([
       {
-        deliveryId: 'delivery-consumer',
+        deliveryId: 'delivery-prepare',
+        deliveryAttempt: 1,
         message
       }
     ])
-    expect(session.getDelivery('delivery-consumer')).toMatchObject({
-      state: 'acked',
+    expect(session.getDelivery('delivery-prepare')).toMatchObject({
+      state: 'in_flight',
+      deliveryAttempt: 1
+    })
+
+    expect(
+      session.acknowledgeCheckpoint({
+        taskId: 'task-consumer',
+        nowMs: 1_001,
+        acknowledgements: [{ deliveryId: 'delivery-prepare', deliveryAttempt: 1 }]
+      })
+    ).toEqual({ ackedDeliveryIds: ['delivery-prepare'], ignoredDeliveryIds: [] })
+    expect(session.getDelivery('delivery-prepare')?.state).toBe('acked')
+  })
+
+  it('does not acknowledge an attempt after its lease has expired', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    session.publish(finding('message-expired', 'expired'), () => 'delivery-expired')
+    const [entry] = session.prepareCheckpoint({
+      taskId: 'task-consumer',
+      nowMs: 1_000,
+      leaseMs: 100,
+      limit: 10
+    })
+
+    expect(
+      session.acknowledgeCheckpoint({
+        taskId: 'task-consumer',
+        nowMs: 1_100,
+        acknowledgements: [
+          { deliveryId: entry!.deliveryId, deliveryAttempt: entry!.deliveryAttempt }
+        ]
+      })
+    ).toEqual({ ackedDeliveryIds: [], ignoredDeliveryIds: ['delivery-expired'] })
+    expect(session.getDelivery('delivery-expired')).toMatchObject({
+      state: 'pending',
       deliveryAttempt: 1
     })
   })
 
-  it('routes no delivery to an unsubscribed step and rejects unknown task identities', async () => {
+  it('does not let one task acknowledge another subscriber delivery', () => {
+    const plan: CollaborationPlan = {
+      objective: 'protect subscriber ownership',
+      maxConcurrency: 2,
+      steps: [
+        { key: 'consumer-a', instruction: 'Consume A.', subscribesTo: ['/findings'] },
+        { key: 'consumer-b', instruction: 'Consume B.', subscribesTo: ['/findings'] }
+      ]
+    }
+    const session = new CollaborationRuntimeSession({
+      plan,
+      taskIdsByStepKey: { 'consumer-a': 'task-a', 'consumer-b': 'task-b' },
+      admissionByStepKey: { 'consumer-a': POLICY, 'consumer-b': POLICY }
+    })
+    session.publish(
+      finding('message-shared', 'shared'),
+      ({ subscriberKey }) => `delivery-${subscriberKey}`
+    )
+    const [entry] = session.prepareCheckpoint({
+      taskId: 'task-a',
+      nowMs: 1_000,
+      leaseMs: 100,
+      limit: 10
+    })
+
+    expect(() =>
+      session.acknowledgeCheckpoint({
+        taskId: 'task-b',
+        nowMs: 1_001,
+        acknowledgements: [
+          { deliveryId: entry!.deliveryId, deliveryAttempt: entry!.deliveryAttempt }
+        ]
+      })
+    ).toThrow('Collaboration delivery delivery-consumer-a does not belong to task task-b')
+    expect(session.getDelivery('delivery-consumer-a')?.state).toBe('in_flight')
+  })
+
+  it('routes no delivery to an unsubscribed step and rejects unknown task identities', () => {
     const session = new CollaborationRuntimeSession({
       plan: PLAN,
       taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
@@ -76,44 +148,14 @@ describe('CollaborationRuntimeSession', () => {
     expect(
       session.publish(finding('message-1', 'x'), ({ subscriberKey }) => subscriberKey)
     ).toEqual(['consumer'])
-    await expect(
-      session.checkpoint({
+    expect(() =>
+      session.prepareCheckpoint({
         taskId: 'task-missing',
         nowMs: 1_000,
         leaseMs: 100,
-        limit: 10,
-        commitContext: async () => {}
+        limit: 10
       })
-    ).rejects.toThrow('Unknown collaboration task: task-missing')
-  })
-
-  it('keeps failed checkpoint deliveries recoverable through lease expiry', async () => {
-    const session = new CollaborationRuntimeSession({
-      plan: PLAN,
-      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
-      admissionByStepKey: { consumer: POLICY }
-    })
-    session.publish(finding('message-1', 'retry'), () => 'delivery-1')
-    const commitError = new Error('context commit failed')
-
-    await expect(
-      session.checkpoint({
-        taskId: 'task-consumer',
-        nowMs: 1_000,
-        leaseMs: 100,
-        limit: 10,
-        commitContext: async () => {
-          throw commitError
-        }
-      })
-    ).rejects.toBe(commitError)
-    expect(session.getDelivery('delivery-1')).toMatchObject({
-      state: 'in_flight',
-      deliveryAttempt: 1
-    })
-
-    expect(session.releaseExpired(1_100).map((delivery) => delivery.id)).toEqual(['delivery-1'])
-    expect(session.getDelivery('delivery-1')).toMatchObject({ state: 'pending' })
+    ).toThrow('Unknown collaboration task: task-missing')
   })
 
   it('rejects subscribed steps without an own admission policy', () => {

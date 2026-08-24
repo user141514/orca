@@ -1,8 +1,8 @@
-import type {
-  CollaborationAdmissionContextEntry,
-  CollaborationAdmissionPolicy
-} from './collaboration-admission'
-import { deliverCollaborationCheckpoint } from './collaboration-checkpoint-delivery'
+import type { CollaborationAdmissionPolicy } from './collaboration-admission'
+import {
+  prepareCollaborationCheckpoint,
+  type CollaborationPreparedContextEntry
+} from './collaboration-checkpoint-delivery'
 import type { CollaborationDelivery } from './collaboration-mailbox'
 import { CollaborationMailbox } from './collaboration-mailbox'
 import type { CollaborationMessage } from './collaboration-message'
@@ -67,37 +67,64 @@ export class CollaborationRuntimeSession {
     return resolved.map(({ deliveryId }) => deliveryId)
   }
 
-  async checkpoint(options: {
+  prepareCheckpoint(options: {
     taskId: string
     nowMs: number
     leaseMs: number
     limit: number
-    commitContext: (entries: readonly CollaborationAdmissionContextEntry[]) => Promise<void>
-  }): Promise<void> {
-    const stepKey = this.stepKeyByTaskId.get(options.taskId)
-    if (!stepKey) {
-      throw new Error(`Unknown collaboration task: ${options.taskId}`)
-    }
-    const policy = this.admissionByStepKey.get(stepKey)
-    if (!policy) {
-      throw new Error(`Missing collaboration admission policy for step: ${stepKey}`)
-    }
-    await deliverCollaborationCheckpoint({
+  }): readonly CollaborationPreparedContextEntry[] {
+    const { stepKey, policy } = this.requireCheckpointBinding(options.taskId)
+    return prepareCollaborationCheckpoint({
       mailbox: this.mailbox,
       subscriberKey: stepKey,
       nowMs: options.nowMs,
       leaseMs: options.leaseMs,
       limit: options.limit,
-      policy,
-      commitContext: options.commitContext
+      policy
     })
   }
 
-  releaseExpired(nowMs: number): CollaborationDelivery[] {
-    return this.mailbox.releaseExpired(nowMs)
+  acknowledgeCheckpoint(options: {
+    taskId: string
+    nowMs: number
+    acknowledgements: readonly { deliveryId: string; deliveryAttempt: number }[]
+  }): { ackedDeliveryIds: string[]; ignoredDeliveryIds: string[] } {
+    const { stepKey } = this.requireCheckpointBinding(options.taskId)
+    this.mailbox.releaseExpired(options.nowMs)
+    for (const acknowledgement of options.acknowledgements) {
+      const delivery = this.mailbox.get(acknowledgement.deliveryId)
+      if (delivery && delivery.subscriberKey !== stepKey) {
+        throw new Error(
+          `Collaboration delivery ${acknowledgement.deliveryId} does not belong to task ${options.taskId}`
+        )
+      }
+    }
+
+    const ackedDeliveryIds: string[] = []
+    const ignoredDeliveryIds: string[] = []
+    for (const acknowledgement of options.acknowledgements) {
+      const acked = this.mailbox.ack(acknowledgement.deliveryId, acknowledgement.deliveryAttempt)
+      ;(acked ? ackedDeliveryIds : ignoredDeliveryIds).push(acknowledgement.deliveryId)
+    }
+    return { ackedDeliveryIds, ignoredDeliveryIds }
   }
 
   getDelivery(deliveryId: string): CollaborationDelivery | undefined {
     return this.mailbox.get(deliveryId)
+  }
+
+  private requireCheckpointBinding(taskId: string): {
+    stepKey: string
+    policy: CollaborationAdmissionPolicy
+  } {
+    const stepKey = this.stepKeyByTaskId.get(taskId)
+    if (!stepKey) {
+      throw new Error(`Unknown collaboration task: ${taskId}`)
+    }
+    const policy = this.admissionByStepKey.get(stepKey)
+    if (!policy) {
+      throw new Error(`Missing collaboration admission policy for step: ${stepKey}`)
+    }
+    return { stepKey, policy }
   }
 }

@@ -1,20 +1,34 @@
 import {
   admitCollaborationDeliveries,
-  type CollaborationAdmissionContextEntry,
   type CollaborationAdmissionPolicy
 } from './collaboration-admission'
 import type { CollaborationMailbox } from './collaboration-mailbox'
+import type { CollaborationMessage } from './collaboration-message'
 
-export async function deliverCollaborationCheckpoint(options: {
+export type CollaborationPreparedContextEntry = {
+  readonly deliveryId: string
+  readonly deliveryAttempt: number
+  readonly message: CollaborationMessage
+}
+
+export function prepareCollaborationCheckpoint(options: {
   mailbox: CollaborationMailbox
   subscriberKey: string
   nowMs: number
   leaseMs: number
   limit: number
   policy: CollaborationAdmissionPolicy
-  // At-least-once retries can commit the same deliveryId again; callers must be idempotent.
-  commitContext: (entries: readonly CollaborationAdmissionContextEntry[]) => Promise<void>
-}): Promise<void> {
+}): readonly CollaborationPreparedContextEntry[] {
+  options.mailbox.releaseExpired(options.nowMs)
+  const outstanding = options.mailbox.inFlight(options.subscriberKey)
+  if (outstanding.length > 0) {
+    return outstanding.map((delivery) => ({
+      deliveryId: delivery.id,
+      deliveryAttempt: delivery.deliveryAttempt,
+      message: delivery.message
+    }))
+  }
+
   const claimed = options.mailbox.claim({
     subscriberKey: options.subscriberKey,
     nowMs: options.nowMs,
@@ -22,7 +36,7 @@ export async function deliverCollaborationCheckpoint(options: {
     limit: options.limit
   })
   if (claimed.length === 0) {
-    return
+    return []
   }
 
   const attemptByDeliveryId = new Map(
@@ -32,17 +46,11 @@ export async function deliverCollaborationCheckpoint(options: {
   for (const deliveryId of admitted.filteredDeliveryIds) {
     options.mailbox.ack(deliveryId, requireDeliveryAttempt(attemptByDeliveryId, deliveryId))
   }
-  if (admitted.contextEntries.length === 0) {
-    return
-  }
-
-  await options.commitContext(admitted.contextEntries)
-  for (const entry of admitted.contextEntries) {
-    options.mailbox.ack(
-      entry.deliveryId,
-      requireDeliveryAttempt(attemptByDeliveryId, entry.deliveryId)
-    )
-  }
+  return admitted.contextEntries.map((entry) => ({
+    deliveryId: entry.deliveryId,
+    deliveryAttempt: requireDeliveryAttempt(attemptByDeliveryId, entry.deliveryId),
+    message: entry.message
+  }))
 }
 
 function requireDeliveryAttempt(

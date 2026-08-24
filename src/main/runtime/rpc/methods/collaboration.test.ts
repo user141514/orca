@@ -18,14 +18,20 @@ afterEach(() => {
   db = undefined
 })
 
-function checkpointMethod() {
-  const method = COLLABORATION_METHODS.find(
-    (candidate) => candidate.name === 'collaboration.checkpoint'
-  )
+function collaborationMethod(name: 'collaboration.checkpoint' | 'collaboration.checkpoint-ack') {
+  const method = COLLABORATION_METHODS.find((candidate) => candidate.name === name)
   if (!method) {
-    throw new Error('collaboration.checkpoint not registered')
+    throw new Error(`${name} not registered`)
   }
   return method
+}
+
+function checkpointMethod() {
+  return collaborationMethod('collaboration.checkpoint')
+}
+
+function checkpointAckMethod() {
+  return collaborationMethod('collaboration.checkpoint-ack')
 }
 
 function setupAuthorizedCheckpoint() {
@@ -89,8 +95,11 @@ function setupAuthorizedCheckpoint() {
 }
 
 describe('collaboration.checkpoint', () => {
-  it('is registered in the runtime RPC manifest', () => {
+  it('registers both checkpoint phases in the runtime RPC manifest', () => {
     expect(ALL_RPC_METHODS.some((method) => method.name === 'collaboration.checkpoint')).toBe(true)
+    expect(ALL_RPC_METHODS.some((method) => method.name === 'collaboration.checkpoint-ack')).toBe(
+      true
+    )
   })
 
   it('returns admitted context for the authenticated active Dispatch and acknowledges it', async () => {
@@ -113,11 +122,165 @@ describe('collaboration.checkpoint', () => {
       entries: [
         {
           deliveryId: 'delivery-1',
+          deliveryAttempt: 1,
           message: expect.objectContaining({ id: 'message-1', body: 'Use this finding.' })
         }
       ]
     })
-    expect(session.getDelivery('delivery-1')).toMatchObject({ state: 'acked' })
+    expect(session.getDelivery('delivery-1')).toMatchObject({
+      state: 'in_flight',
+      deliveryAttempt: 1
+    })
+  })
+
+  it('replays the same prepared context when the checkpoint response is retried within its lease', async () => {
+    const { runtime, task, dispatch, capability, session } = setupAuthorizedCheckpoint()
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const checkpoint = checkpointMethod()
+    const params = checkpoint.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id
+    })
+
+    const first = await checkpoint.handler(params, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)
+    vi.mocked(Date.now).mockReturnValue(1_001)
+    const replay = await checkpoint.handler(params, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)
+
+    expect(replay).toEqual(first)
+    expect(replay).toMatchObject({
+      entries: [{ deliveryId: 'delivery-1', deliveryAttempt: 1 }]
+    })
+    expect(session.getDelivery('delivery-1')).toMatchObject({
+      state: 'in_flight',
+      deliveryAttempt: 1
+    })
+  })
+
+  it('acknowledges prepared context only after the authenticated worker confirms its attempt', async () => {
+    const { runtime, task, dispatch, capability, session } = setupAuthorizedCheckpoint()
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const checkpoint = checkpointMethod()
+    const checkpointParams = checkpoint.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id
+    })
+    const prepared = (await checkpoint.handler(checkpointParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)) as {
+      entries: { deliveryId: string; deliveryAttempt: number }[]
+    }
+    const ack = checkpointAckMethod()
+    const ackParams = ack.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id,
+      acknowledgements: prepared.entries.map(({ deliveryId, deliveryAttempt }) => ({
+        deliveryId,
+        deliveryAttempt
+      }))
+    })
+
+    const result = await ack.handler(ackParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)
+
+    expect(result).toEqual({ ackedDeliveryIds: ['delivery-1'], ignoredDeliveryIds: [] })
+    expect(session.getDelivery('delivery-1')?.state).toBe('acked')
+  })
+
+  it('ignores an acknowledgement that arrives after its lease expired', async () => {
+    const { runtime, task, dispatch, capability, session } = setupAuthorizedCheckpoint()
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const checkpoint = checkpointMethod()
+    const checkpointParams = checkpoint.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id
+    })
+    const prepared = (await checkpoint.handler(checkpointParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)) as {
+      entries: { deliveryId: string; deliveryAttempt: number }[]
+    }
+    vi.mocked(Date.now).mockReturnValue(61_000)
+    const ack = checkpointAckMethod()
+    const ackParams = ack.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id,
+      acknowledgements: prepared.entries.map(({ deliveryId, deliveryAttempt }) => ({
+        deliveryId,
+        deliveryAttempt
+      }))
+    })
+
+    const result = await ack.handler(ackParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)
+
+    expect(result).toEqual({ ackedDeliveryIds: [], ignoredDeliveryIds: ['delivery-1'] })
+    expect(session.getDelivery('delivery-1')).toMatchObject({
+      state: 'pending',
+      deliveryAttempt: 1
+    })
+  })
+
+  it('ignores a stale checkpoint acknowledgement after the delivery was reclaimed', async () => {
+    const { runtime, task, dispatch, capability, session } = setupAuthorizedCheckpoint()
+    vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const checkpoint = checkpointMethod()
+    const checkpointParams = checkpoint.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id
+    })
+    const first = (await checkpoint.handler(checkpointParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)) as {
+      entries: { deliveryId: string; deliveryAttempt: number }[]
+    }
+    vi.mocked(Date.now).mockReturnValue(61_000)
+    const second = (await checkpoint.handler(checkpointParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)) as {
+      entries: { deliveryId: string; deliveryAttempt: number }[]
+    }
+    expect(second.entries).toMatchObject([{ deliveryId: 'delivery-1', deliveryAttempt: 2 }])
+
+    const ack = checkpointAckMethod()
+    const staleAckParams = ack.params?.parse({
+      from: 'term_worker',
+      taskId: task.id,
+      dispatchId: dispatch.id,
+      acknowledgements: first.entries.map(({ deliveryId, deliveryAttempt }) => ({
+        deliveryId,
+        deliveryAttempt
+      }))
+    })
+    const stale = await ack.handler(staleAckParams, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)
+
+    expect(stale).toEqual({ ackedDeliveryIds: [], ignoredDeliveryIds: ['delivery-1'] })
+    expect(session.getDelivery('delivery-1')).toMatchObject({
+      state: 'in_flight',
+      deliveryAttempt: 2
+    })
   })
 
   it('rejects an invalid Dispatch capability without consuming the mailbox', async () => {
@@ -228,8 +391,13 @@ describe('collaboration.checkpoint', () => {
       orchestrationCapability: capability
     } as RpcContext)
 
-    expect(result).toMatchObject({ entries: [{ deliveryId: 'delivery-1' }] })
-    expect(session.getDelivery('delivery-1')).toMatchObject({ state: 'acked' })
+    expect(result).toMatchObject({
+      entries: [{ deliveryId: 'delivery-1', deliveryAttempt: 1 }]
+    })
+    expect(session.getDelivery('delivery-1')).toMatchObject({
+      state: 'in_flight',
+      deliveryAttempt: 1
+    })
   })
 
   it('ignores caller-reported pane identity and verifies the runtime pane', async () => {
@@ -272,18 +440,12 @@ describe('collaboration.checkpoint', () => {
 
   it('releases expired deliveries before the checkpoint claim', async () => {
     const { runtime, task, dispatch, capability, session } = setupAuthorizedCheckpoint()
-    const commitError = new Error('first commit failed')
-    await expect(
-      session.checkpoint({
-        taskId: task.id,
-        nowMs: 1_000,
-        leaseMs: 100,
-        limit: 10,
-        commitContext: async () => {
-          throw commitError
-        }
-      })
-    ).rejects.toBe(commitError)
+    session.prepareCheckpoint({
+      taskId: task.id,
+      nowMs: 1_000,
+      leaseMs: 100,
+      limit: 10
+    })
     expect(session.getDelivery('delivery-1')).toMatchObject({
       state: 'in_flight',
       deliveryAttempt: 1
@@ -301,9 +463,11 @@ describe('collaboration.checkpoint', () => {
       orchestrationCapability: capability
     } as RpcContext)
 
-    expect(result).toMatchObject({ entries: [{ deliveryId: 'delivery-1' }] })
+    expect(result).toMatchObject({
+      entries: [{ deliveryId: 'delivery-1', deliveryAttempt: 2 }]
+    })
     expect(session.getDelivery('delivery-1')).toMatchObject({
-      state: 'acked',
+      state: 'in_flight',
       deliveryAttempt: 2
     })
   })
