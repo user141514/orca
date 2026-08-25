@@ -3,7 +3,10 @@ import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { OrchestrationExecutor } from '../../orchestration/orchestration-control-plane'
 import type { TaskExecutionDescriptor } from '../../orchestration/types'
-import { provisionAcceptedLocalWorker } from './orchestration-local-worker-provision'
+import {
+  provisionAcceptedLocalWorker,
+  type LocalWorkerTaskProtocolInstructionBuilder
+} from './orchestration-local-worker-provision'
 import { resolveWorkerLaunchPreferences } from './orchestration-worker-launch-preferences'
 
 type LocalWorkerExecutionConfig = {
@@ -24,6 +27,7 @@ export type LocalWorkerTaskInputResolver = (input: {
 
 type LocalWorkerExecutorOptions = {
   resolveTaskInput?: LocalWorkerTaskInputResolver
+  buildTaskProtocolInstructions?: LocalWorkerTaskProtocolInstructionBuilder
 }
 
 export class LocalWorkerExecutor implements OrchestrationExecutor {
@@ -78,7 +82,8 @@ export class LocalWorkerExecutor implements OrchestrationExecutor {
       agent: config.agent,
       launch,
       timeoutMs: config.timeoutMs,
-      devMode: config.devMode
+      devMode: config.devMode,
+      buildTaskProtocolInstructions: this.options.buildTaskProtocolInstructions
     })
   }
 }

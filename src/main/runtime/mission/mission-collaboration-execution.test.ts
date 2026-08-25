@@ -210,19 +210,32 @@ describe('MissionCollaborationExecution', () => {
       objective: 'source then consumer',
       maxConcurrency: 1,
       steps: [
-        { key: 'source', instruction: 'produce source result' },
+        {
+          key: 'source',
+          instruction: 'produce source result',
+          publishesTo: ['/findings']
+        },
         {
           key: 'consumer',
           instruction: 'consume source result',
           dependsOn: ['source'],
-          contextFrom: ['source']
+          contextFrom: ['source'],
+          subscribesTo: ['/findings'],
+          admission: { acceptedTypes: ['finding'], minPriority: 'normal' }
         }
       ]
     } as CollaborationPlan)
 
     await vi.waitFor(() => expect(prompts).toHaveLength(2), { timeout: 1_000 })
     expect(prompts[0]).not.toContain('=== PREDECESSOR RESULTS ===')
+    expect(prompts[0]).toContain('Allowed publish topics: /findings')
+    expect(prompts[0]).toContain('collaboration publish')
+    expect(prompts[0]).not.toContain('collaboration checkpoint --from')
     expect(prompts[1]).toContain('=== PREDECESSOR RESULTS ===')
+    expect(prompts[1]).toContain('Subscribed topics: /findings')
+    expect(prompts[1]).toContain('collaboration checkpoint --from')
+    expect(prompts[1]).toContain('collaboration checkpoint-ack --from')
+    expect(prompts[1]).not.toContain('collaboration publish --from')
     expect(prompts[1]).toContain('[source]\nsource conclusion')
     expect(prompts[1]).toContain('=== CURRENT STEP ===\nconsume source result')
     await vi.waitFor(

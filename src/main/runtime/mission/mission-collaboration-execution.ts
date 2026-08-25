@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { TuiAgent } from '../../../shared/tui-agent'
 import { buildCollaborationStepInput } from '../collaboration/collaboration-context'
+import { buildCollaborationWorkerProtocol } from '../collaboration/collaboration-worker-protocol'
 import type { CollaborationExecutionPort } from '../collaboration/collaboration-execution-port'
 import { CollaborationRuntimeSession } from '../collaboration/collaboration-runtime-session'
 import type { CollaborationPlan, CollaborationRunReceipt } from '../collaboration/types'
@@ -16,6 +17,7 @@ import {
   LocalWorkerExecutor,
   type LocalWorkerTaskInputResolver
 } from '../rpc/methods/orchestration-local-worker-executor'
+import type { LocalWorkerTaskProtocolInstructionBuilder } from '../rpc/methods/orchestration-local-worker-provision'
 
 export class MissionCollaborationExecution implements CollaborationExecutionPort {
   constructor(
@@ -74,8 +76,15 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
       })
     )
     const resolveTaskInput = buildTaskInputResolver(plan, materialized.tasksByKey)
+    const buildTaskProtocolInstructions = buildTaskProtocolInstructionBuilder(
+      plan,
+      materialized.tasksByKey
+    )
     const executor = new OrchestrationExecutorRouter(db, {
-      'local-worker': new LocalWorkerExecutor(this.runtime, { resolveTaskInput })
+      'local-worker': new LocalWorkerExecutor(this.runtime, {
+        resolveTaskInput,
+        buildTaskProtocolInstructions
+      })
     })
     const runner = new RuntimeOrchestrationRunner(this.runtime, consumerId, executor)
     void runner
@@ -90,6 +99,34 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
         console.error(`[mission] Run ${materialized.run.id} coordinator failed:`, error)
       })
     return { runId: materialized.run.id }
+  }
+}
+
+function buildTaskProtocolInstructionBuilder(
+  plan: CollaborationPlan,
+  tasksByKey: Record<string, { id: string }>
+): LocalWorkerTaskProtocolInstructionBuilder {
+  const collaborationByTaskId = new Map<
+    string,
+    { publishesTo: readonly string[]; subscribesTo: readonly string[] }
+  >()
+  for (const step of plan.steps) {
+    const task = tasksByKey[step.key]
+    if (!task) {
+      throw new Error(`Collaboration step ${step.key} was not materialized.`)
+    }
+    collaborationByTaskId.set(task.id, {
+      publishesTo: step.publishesTo ?? [],
+      subscribesTo: step.subscribesTo ?? []
+    })
+  }
+
+  return (input) => {
+    const collaboration = collaborationByTaskId.get(input.taskId)
+    if (!collaboration) {
+      return ''
+    }
+    return buildCollaborationWorkerProtocol({ ...input, ...collaboration })
   }
 }
 

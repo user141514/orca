@@ -49,6 +49,14 @@ export type LocalWorkerProvisionPlacement =
       }
     }
 
+export type LocalWorkerTaskProtocolInstructionBuilder = (input: {
+  cli: string
+  taskId: string
+  dispatchId: string
+  workerHandle: string
+  dispatchCapability: string
+}) => string
+
 export type AcceptedLocalWorkerProvision = {
   runtime: OrcaRuntimeService
   db: OrchestrationDb
@@ -64,6 +72,7 @@ export type AcceptedLocalWorkerProvision = {
   }
   timeoutMs: number
   devMode?: boolean
+  buildTaskProtocolInstructions?: LocalWorkerTaskProtocolInstructionBuilder
 }
 
 export type LocalWorkerProvisionReceipt = {
@@ -202,15 +211,26 @@ export async function provisionAcceptedLocalWorker(
     })
 
     failedStage = 'dispatch_input'
+    const cliCommand = runtime.getTerminalOrchestrationCliCommand(terminalHandle)
+    const protocolInstructions = args.buildTaskProtocolInstructions?.({
+      cli: args.devMode ? 'orca-dev' : cliCommand,
+      taskId: task.id,
+      dispatchId,
+      workerHandle: terminalHandle,
+      dispatchCapability: capability
+    })
+    const taskSpec = protocolInstructions?.trim()
+      ? `${protocolInstructions.trim()}\n\n=== ASSIGNMENT ===\n${task.spec}`
+      : task.spec
     const preamble = buildDispatchPreamble({
       taskId: task.id,
       dispatchId,
-      taskSpec: task.spec,
+      taskSpec,
       coordinatorHandle: args.coordinatorAddress,
       workerHandle: terminalHandle,
       dispatchCapability: capability,
       devMode: args.devMode,
-      cliCommand: runtime.getTerminalOrchestrationCliCommand(terminalHandle)
+      cliCommand
     })
     await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
     effects.push({
