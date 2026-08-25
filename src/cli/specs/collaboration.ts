@@ -23,8 +23,11 @@ export const COLLABORATION_COMMAND_SPECS: CommandSpec[] = [
     path: ['collaboration', 'checkpoint'],
     summary: 'Read collaboration context waiting at an explicit worker checkpoint',
     usage:
-      'orca collaboration checkpoint --from <handle> --task-id <task> --dispatch-id <dispatch> --dispatch-capability <cap> [--json]',
-    allowedFlags: [...GLOBAL_FLAGS, ...AUTHORITY_FLAGS]
+      'orca collaboration checkpoint --from <handle> --task-id <task> --dispatch-id <dispatch> --dispatch-capability <cap> [--wait] [--timeout-ms <ms>] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, ...AUTHORITY_FLAGS, 'wait', 'timeout-ms'],
+    notes: [
+      'Without --wait, checkpoint is a non-blocking snapshot. With --wait, it waits event-driven for admitted collaboration context or timeout; it does not poll.'
+    ]
   },
   {
     path: ['collaboration', 'checkpoint-ack'],

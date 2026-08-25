@@ -42,6 +42,12 @@ describe('buildCollaborationWorkerProtocol', () => {
     expect(result).toContain('deliveryId')
     expect(result).toContain('deliveryAttempt')
     expect(result).toContain('Never poll or loop on checkpoint')
+    expect(result).toContain('orca-dev collaboration checkpoint --from term_worker')
+    expect(result).toContain('--wait --timeout-ms 60000')
+    expect(result).toContain('if required collaboration data has not arrived')
+    expect(result).toContain(
+      'If after that blocking checkpoint your assignment still requires the missing collaboration data, do not report success'
+    )
     expect(result).toContain('acknowledge only after you have incorporated the returned entries')
     expect(result).not.toContain('collaboration publish --from')
   })

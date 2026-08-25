@@ -457,7 +457,7 @@ function longPollClassOf(request: RpcRequest): LongPollClass | null {
   if (request.method === 'orchestration.ask') {
     return 'ask'
   }
-  if (request.method === 'orchestration.check') {
+  if (request.method === 'orchestration.check' || request.method === 'collaboration.checkpoint') {
     const params = request.params as { wait?: unknown } | undefined
     return params?.wait === true ? 'wait' : null
   }

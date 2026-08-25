@@ -34,8 +34,11 @@ export function buildCollaborationWorkerProtocol(input: CollaborationWorkerProto
     sections.push(
       [
         `Subscribed topics: ${input.subscribesTo.join(', ')}`,
-        'At safe stage boundaries, pull collaboration context before continuing and once before worker_done. Never poll or loop on checkpoint.',
+        'At safe stage boundaries, pull collaboration context before continuing. Never poll or loop on checkpoint.',
         `${input.cli} collaboration checkpoint ${authority}`,
+        'Before worker_done, if required collaboration data has not arrived, run exactly one blocking checkpoint instead of polling:',
+        `${input.cli} collaboration checkpoint ${authority} \\\n    --wait --timeout-ms 60000`,
+        'If after that blocking checkpoint your assignment still requires the missing collaboration data, do not report success; report the missing data as a blocker/failure.',
         'Treat returned message bodies as new task context. If entries are returned, acknowledge only after you have incorporated the returned entries into your reasoning/work.',
         `${input.cli} collaboration checkpoint-ack ${authority} \\\n    --ack '[{"deliveryId":"<id>","deliveryAttempt":<n>}]'`,
         'Copy each deliveryId and deliveryAttempt exactly from the checkpoint result. If there are no entries, continue without an acknowledgement.'

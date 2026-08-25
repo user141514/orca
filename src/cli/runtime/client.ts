@@ -27,6 +27,7 @@ import { getTimeoutMsParam, isWaitingCheck } from './runtime-request-timeout'
 // emit its terminal frame. The 10 s grace absorbs round-trip + one final
 // keepalive window. See design doc §3.1.
 const LONG_POLL_CLIENT_GRACE_MS = 10_000
+const COLLABORATION_CHECKPOINT_WAIT_DEFAULT_TIMEOUT_MS = 60_000
 
 // Why: ws + tweetnacl + the remote-runtime frame stack only matter once a
 // request actually goes over a pairing offer, which local CLI calls never do.
@@ -139,12 +140,19 @@ export class RuntimeClient {
   // See design doc §3.1.
   private resolveMethodTimeoutMs(method: string, params?: unknown): number {
     if (
-      (method === 'orchestration.check' && isWaitingCheck(params)) ||
+      ((method === 'orchestration.check' || method === 'collaboration.checkpoint') &&
+        isWaitingCheck(params)) ||
       method === 'terminal.wait'
     ) {
       const inner = Number(getTimeoutMsParam(params))
       if (Number.isFinite(inner) && inner > 0) {
         return Math.max(inner + LONG_POLL_CLIENT_GRACE_MS, this.requestTimeoutMs)
+      }
+      if (method === 'collaboration.checkpoint') {
+        return Math.max(
+          COLLABORATION_CHECKPOINT_WAIT_DEFAULT_TIMEOUT_MS + LONG_POLL_CLIENT_GRACE_MS,
+          this.requestTimeoutMs
+        )
       }
     }
     return this.requestTimeoutMs

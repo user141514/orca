@@ -1,5 +1,5 @@
 import type { CommandHandler } from '../dispatch'
-import { getRequiredStringFlag } from '../flags'
+import { getOptionalPositiveIntegerFlag, getRequiredStringFlag } from '../flags'
 import { printResult } from '../format'
 import { RuntimeClientError } from '../runtime-client'
 
@@ -24,6 +24,9 @@ type CollaborationCheckpointResult = {
     deliveryAttempt: number
     message: CollaborationMessage
   }[]
+  timedOut?: boolean
+  cancelled?: boolean
+  connectionLost?: boolean
 }
 
 type CollaborationCheckpointAckResult = {
@@ -55,12 +58,23 @@ export const COLLABORATION_HANDLERS: Record<string, CommandHandler> = {
   },
   'collaboration checkpoint': async ({ flags, client, json }) => {
     const authority = readAuthorityFlags(flags)
+    const wait = flags.has('wait')
+    const timeoutMs = getOptionalPositiveIntegerFlag(flags, 'timeout-ms')
+    if (timeoutMs !== undefined && !wait) {
+      throw new RuntimeClientError('invalid_argument', '--timeout-ms requires --wait')
+    }
     const response = await client.call<CollaborationCheckpointResult>(
       'collaboration.checkpoint',
-      authority.params,
+      {
+        ...authority.params,
+        ...(wait ? { wait: true, ...(timeoutMs !== undefined ? { timeoutMs } : {}) } : {})
+      },
       { orchestrationCapability: authority.dispatchCapability }
     )
     printResult(response, json, formatCheckpoint)
+    if (response.result.timedOut || response.result.cancelled) {
+      process.exitCode = 1
+    }
   },
   'collaboration checkpoint-ack': async ({ flags, client, json }) => {
     const authority = readAuthorityFlags(flags)
@@ -135,6 +149,14 @@ function formatPublish(result: CollaborationPublishResult): string {
 }
 
 function formatCheckpoint(result: CollaborationCheckpointResult): string {
+  if (result.timedOut) {
+    return 'Timed out waiting for checkpoint entries.'
+  }
+  if (result.cancelled) {
+    return result.connectionLost
+      ? 'Checkpoint wait connection closed.'
+      : 'Checkpoint wait cancelled.'
+  }
   if (result.entries.length === 0) {
     return 'No checkpoint entries.'
   }

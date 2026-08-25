@@ -14,6 +14,7 @@ let db: OrchestrationDb | undefined
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
   db?.close()
   db = undefined
 })
@@ -121,8 +122,26 @@ function setupAuthorizedPublish() {
     paneKey,
     processIncarnation
   })
-  vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue(paneKey)
-  vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockReturnValue(processIncarnation)
+  const consumerPaneKey = 'tab_consumer:leaf_consumer'
+  const consumerProcessIncarnation = 'runtime_test:term_consumer:1'
+  const consumerDispatch = db.createDispatchContext(
+    consumerTask.id,
+    'term_consumer',
+    consumerPaneKey,
+    undefined,
+    consumerProcessIncarnation
+  )
+  const consumerCapability = db.mintDispatchCapability({
+    dispatchId: consumerDispatch.id,
+    paneKey: consumerPaneKey,
+    processIncarnation: consumerProcessIncarnation
+  })
+  vi.spyOn(runtime, 'getTerminalPaneKey').mockImplementation((handle) =>
+    handle === 'term_consumer' ? consumerPaneKey : paneKey
+  )
+  vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
+    handle === 'term_consumer' ? consumerProcessIncarnation : processIncarnation
+  )
 
   const session = new CollaborationRuntimeSession({
     plan: {
@@ -143,7 +162,17 @@ function setupAuthorizedPublish() {
     }
   })
   registerCollaborationRuntimeSession(runtime, run.id, session)
-  return { runtime, run, producerTask, consumerTask, dispatch, capability, session }
+  return {
+    runtime,
+    run,
+    producerTask,
+    consumerTask,
+    dispatch,
+    capability,
+    consumerDispatch,
+    consumerCapability,
+    session
+  }
 }
 
 describe('collaboration.publish', () => {

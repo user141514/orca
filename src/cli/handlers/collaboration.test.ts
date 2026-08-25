@@ -6,6 +6,7 @@ const log = vi.spyOn(console, 'log').mockImplementation(() => {})
 
 afterEach(() => {
   log.mockClear()
+  process.exitCode = undefined
 })
 
 describe('collaboration CLI handlers', () => {
@@ -207,6 +208,94 @@ describe('collaboration CLI handlers', () => {
     expect(output).toContain('delivery-1 attempt=2')
     expect(output).toContain('/findings finding high producer=producer')
     expect(output).toContain('Use this finding.')
+  })
+
+  it('maps blocking checkpoint flags onto the RPC without changing Dispatch authority', async () => {
+    const call = vi.fn().mockResolvedValue({
+      result: {
+        entries: [],
+        timedOut: false,
+        cancelled: false,
+        connectionLost: false
+      }
+    })
+    const client = { call } as unknown as RuntimeClient
+
+    await COLLABORATION_HANDLERS['collaboration checkpoint']({
+      flags: new Map<string, string | boolean>([
+        ['from', 'term_worker'],
+        ['task-id', 'task_1'],
+        ['dispatch-id', 'ctx_1'],
+        ['dispatch-capability', 'dcap_secret'],
+        ['wait', true],
+        ['timeout-ms', '60000']
+      ]),
+      client,
+      cwd: '/tmp/repo',
+      json: false
+    })
+
+    expect(call).toHaveBeenCalledWith(
+      'collaboration.checkpoint',
+      {
+        from: 'term_worker',
+        taskId: 'task_1',
+        dispatchId: 'ctx_1',
+        wait: true,
+        timeoutMs: 60_000
+      },
+      { orchestrationCapability: 'dcap_secret' }
+    )
+  })
+
+  it('reports a blocking checkpoint timeout as a non-zero command result', async () => {
+    const call = vi.fn().mockResolvedValue({
+      result: {
+        entries: [],
+        timedOut: true,
+        cancelled: false,
+        connectionLost: false
+      }
+    })
+    const client = { call } as unknown as RuntimeClient
+
+    await COLLABORATION_HANDLERS['collaboration checkpoint']({
+      flags: new Map<string, string | boolean>([
+        ['from', 'term_worker'],
+        ['task-id', 'task_1'],
+        ['dispatch-id', 'ctx_1'],
+        ['dispatch-capability', 'dcap_secret'],
+        ['wait', true],
+        ['timeout-ms', '1000']
+      ]),
+      client,
+      cwd: '/tmp/repo',
+      json: false
+    })
+
+    expect(log.mock.calls.flat().join('\n')).toContain('Timed out waiting for checkpoint entries.')
+    expect(process.exitCode).toBe(1)
+  })
+
+  it('rejects timeout-ms without wait before calling the runtime', async () => {
+    const call = vi.fn()
+    const client = { call } as unknown as RuntimeClient
+
+    await expect(
+      COLLABORATION_HANDLERS['collaboration checkpoint']({
+        flags: new Map([
+          ['from', 'term_worker'],
+          ['task-id', 'task_1'],
+          ['dispatch-id', 'ctx_1'],
+          ['dispatch-capability', 'dcap_secret'],
+          ['timeout-ms', '1000']
+        ]),
+        client,
+        cwd: '/tmp/repo',
+        json: false
+      })
+    ).rejects.toMatchObject({ code: 'invalid_argument' })
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('escapes terminal control characters from collaboration message bodies', async () => {

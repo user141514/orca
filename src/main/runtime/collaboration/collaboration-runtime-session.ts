@@ -37,6 +37,16 @@ type CollaborationPublicationReceipt = {
   deliveryIds: readonly string[]
 }
 
+export type CollaborationCheckpointWaitResult =
+  | 'notified'
+  | 'timed_out'
+  | 'cancelled'
+  | 'waiter_exists'
+
+type CollaborationCheckpointWaiter = {
+  notify: () => void
+}
+
 export class CollaborationRuntimeSession {
   private readonly mailbox = new CollaborationMailbox()
   private readonly routing
@@ -47,6 +57,7 @@ export class CollaborationRuntimeSession {
     string,
     Map<string, CollaborationPublicationReceipt>
   >()
+  private readonly checkpointWaiterByStepKey = new Map<string, CollaborationCheckpointWaiter>()
 
   constructor(options: {
     plan: CollaborationPlan
@@ -123,7 +134,66 @@ export class CollaborationRuntimeSession {
     for (const { deliveryId, intent } of resolved) {
       this.mailbox.enqueue(deliveryId, intent)
     }
+    for (const { intent } of resolved) {
+      this.checkpointWaiterByStepKey.get(intent.subscriberKey)?.notify()
+    }
     return resolved.map(({ deliveryId }) => deliveryId)
+  }
+
+  waitForCheckpointAvailability(options: {
+    taskId: string
+    timeoutMs: number
+    signal?: AbortSignal
+  }): Promise<CollaborationCheckpointWaitResult> {
+    const { stepKey } = this.requireCheckpointBinding(options.taskId)
+    if (this.checkpointWaiterByStepKey.has(stepKey)) {
+      return Promise.resolve('waiter_exists')
+    }
+    if (options.signal?.aborted) {
+      return Promise.resolve('cancelled')
+    }
+
+    return new Promise((resolve) => {
+      let settled = false
+      let timeout: ReturnType<typeof setTimeout> | null = null
+      let abortCleanup: (() => void) | null = null
+      const finish = (result: CollaborationCheckpointWaitResult): void => {
+        if (settled) {
+          return
+        }
+        settled = true
+        if (timeout) {
+          clearTimeout(timeout)
+          timeout = null
+        }
+        abortCleanup?.()
+        abortCleanup = null
+        if (this.checkpointWaiterByStepKey.get(stepKey) === waiter) {
+          this.checkpointWaiterByStepKey.delete(stepKey)
+        }
+        resolve(result)
+      }
+      const waiter: CollaborationCheckpointWaiter = {
+        notify: () => finish('notified')
+      }
+      const signal = options.signal
+      if (signal) {
+        const onAbort = (): void => finish('cancelled')
+        signal.addEventListener('abort', onAbort, { once: true })
+        abortCleanup = () => signal.removeEventListener('abort', onAbort)
+        if (signal.aborted) {
+          finish('cancelled')
+          return
+        }
+      }
+
+      this.checkpointWaiterByStepKey.set(stepKey, waiter)
+      if (this.hasCheckpointAvailability(stepKey)) {
+        finish('notified')
+        return
+      }
+      timeout = setTimeout(() => finish('timed_out'), Math.max(0, options.timeoutMs))
+    })
   }
 
   prepareCheckpoint(options: {
@@ -170,6 +240,10 @@ export class CollaborationRuntimeSession {
 
   getDelivery(deliveryId: string): CollaborationDelivery | undefined {
     return this.mailbox.get(deliveryId)
+  }
+
+  private hasCheckpointAvailability(stepKey: string): boolean {
+    return this.mailbox.pending(stepKey).length > 0 || this.mailbox.inFlight(stepKey).length > 0
   }
 
   private requireCheckpointBinding(taskId: string): {

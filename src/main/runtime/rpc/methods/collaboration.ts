@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { getCollaborationRuntimeSession } from '../../collaboration-runtime/collaboration-runtime-registry'
+import type { CollaborationPreparedContextEntry } from '../../collaboration/collaboration-checkpoint-delivery'
 import {
   CollaborationPublicationConflictError,
   CollaborationPublishTopicError
@@ -13,6 +14,8 @@ import { requiredString } from '../schemas'
 
 const CHECKPOINT_LEASE_MS = 60_000
 const CHECKPOINT_LIMIT = 50
+const CHECKPOINT_WAIT_DEFAULT_TIMEOUT_MS = 60_000
+const CHECKPOINT_WAIT_MAX_TIMEOUT_MS = 600_000
 
 const CollaborationAuthorityParams = z.object({
   from: requiredString('Collaboration checkpoint requires a sender terminal'),
@@ -28,7 +31,10 @@ const CollaborationPublishParams = CollaborationAuthorityParams.extend({
   body: requiredString('Collaboration publish requires a body')
 })
 
-const CollaborationCheckpointParams = CollaborationAuthorityParams
+const CollaborationCheckpointParams = CollaborationAuthorityParams.extend({
+  wait: z.boolean().optional(),
+  timeoutMs: z.number().int().min(1).max(CHECKPOINT_WAIT_MAX_TIMEOUT_MS).optional()
+})
 const CollaborationCheckpointAckParams = CollaborationAuthorityParams.extend({
   acknowledgements: z
     .array(
@@ -80,21 +86,78 @@ export const COLLABORATION_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'collaboration.checkpoint',
     params: CollaborationCheckpointParams,
-    handler: async (params, { runtime, orchestrationCapability }) => {
+    handler: async (params, { runtime, orchestrationCapability, signal }) => {
       const dispatch = requireCollaborationDispatchAuthority(
         params,
         runtime,
         orchestrationCapability
       )
       const session = requireCollaborationSession(runtime, dispatch)
-      const nowMs = Date.now()
-      return {
-        entries: session.prepareCheckpoint({
+      const prepare = () =>
+        session.prepareCheckpoint({
           taskId: params.taskId,
-          nowMs,
+          nowMs: Date.now(),
           leaseMs: CHECKPOINT_LEASE_MS,
           limit: CHECKPOINT_LIMIT
         })
+      let entries = prepare()
+      if (!params.wait) {
+        return { entries }
+      }
+      if (entries.length > 0) {
+        return checkpointWaitSuccess(entries)
+      }
+
+      const deadline = Date.now() + (params.timeoutMs ?? CHECKPOINT_WAIT_DEFAULT_TIMEOUT_MS)
+      while (true) {
+        const remainingMs = Math.max(0, deadline - Date.now())
+        if (remainingMs === 0) {
+          return checkpointWaitTimedOut()
+        }
+        const waitResult = await session.waitForCheckpointAvailability({
+          taskId: params.taskId,
+          timeoutMs: remainingMs,
+          signal
+        })
+        if (waitResult === 'waiter_exists') {
+          throw new OrchestrationError(
+            'waiter_exists',
+            `Task ${params.taskId} already has an active collaboration checkpoint waiter.`
+          )
+        }
+        if (waitResult === 'timed_out') {
+          return checkpointWaitTimedOut()
+        }
+        if (waitResult === 'cancelled') {
+          return {
+            entries: [],
+            timedOut: false,
+            cancelled: true,
+            connectionLost: signal?.aborted === true
+          }
+        }
+
+        const latestDispatch = requireCollaborationDispatchAuthority(
+          params,
+          runtime,
+          orchestrationCapability
+        )
+        const latestSession = requireCollaborationSession(runtime, latestDispatch)
+        if (latestSession !== session) {
+          throw new OrchestrationError(
+            'collaboration_session_unavailable',
+            `Collaboration session for Run ${latestDispatch.run_id} changed while waiting.`
+          )
+        }
+        entries = latestSession.prepareCheckpoint({
+          taskId: params.taskId,
+          nowMs: Date.now(),
+          leaseMs: CHECKPOINT_LEASE_MS,
+          limit: CHECKPOINT_LIMIT
+        })
+        if (entries.length > 0) {
+          return checkpointWaitSuccess(entries)
+        }
       }
     }
   }),
@@ -116,6 +179,24 @@ export const COLLABORATION_METHODS: RpcMethod[] = [
     }
   })
 ]
+
+function checkpointWaitSuccess(entries: readonly CollaborationPreparedContextEntry[]) {
+  return {
+    entries,
+    timedOut: false,
+    cancelled: false,
+    connectionLost: false
+  }
+}
+
+function checkpointWaitTimedOut() {
+  return {
+    entries: [],
+    timedOut: true,
+    cancelled: false,
+    connectionLost: false
+  }
+}
 
 function requireCollaborationDispatchAuthority(
   params: CollaborationAuthorityInput,

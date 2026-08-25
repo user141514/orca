@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CollaborationAdmissionPolicy } from './collaboration-admission'
 import type { CollaborationMessage } from './collaboration-message'
 import { CollaborationRuntimeSession } from './collaboration-runtime-session'
@@ -21,6 +21,10 @@ const POLICY: CollaborationAdmissionPolicy = {
   acceptedTypes: ['finding'],
   minPriority: 'normal'
 }
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function finding(id: string, body: string): CollaborationMessage {
   return {
@@ -194,6 +198,151 @@ describe('CollaborationRuntimeSession', () => {
         deliveryIdFor: () => 'delivery-attacker'
       })
     ).toThrow('Unknown collaboration task: task-attacker')
+  })
+
+  it('wakes a blocking checkpoint waiter when a subscribed publication arrives', async () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+
+    const waiting = session.waitForCheckpointAvailability({
+      taskId: 'task-consumer',
+      timeoutMs: 1_000
+    })
+    session.publishFromTask({
+      taskId: 'task-producer',
+      message: {
+        id: 'message-wake',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'normal',
+        body: 'wake consumer'
+      },
+      deliveryIdFor: () => 'delivery-wake'
+    })
+
+    await expect(waiting).resolves.toBe('notified')
+  })
+
+  it('returns immediately when checkpoint context is already available', async () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    session.publishFromTask({
+      taskId: 'task-producer',
+      message: {
+        id: 'message-ready',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'normal',
+        body: 'already ready'
+      },
+      deliveryIdFor: () => 'delivery-ready'
+    })
+
+    await expect(
+      session.waitForCheckpointAvailability({ taskId: 'task-consumer', timeoutMs: 1_000 })
+    ).resolves.toBe('notified')
+  })
+
+  it('fences concurrent blocking waiters for the same subscriber and cleans up on abort', async () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    const firstController = new AbortController()
+    const first = session.waitForCheckpointAvailability({
+      taskId: 'task-consumer',
+      timeoutMs: 1_000,
+      signal: firstController.signal
+    })
+
+    await expect(
+      session.waitForCheckpointAvailability({ taskId: 'task-consumer', timeoutMs: 1_000 })
+    ).resolves.toBe('waiter_exists')
+
+    firstController.abort()
+    await expect(first).resolves.toBe('cancelled')
+
+    const second = session.waitForCheckpointAvailability({
+      taskId: 'task-consumer',
+      timeoutMs: 1_000
+    })
+    session.publishFromTask({
+      taskId: 'task-producer',
+      message: {
+        id: 'message-after-abort',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'normal',
+        body: 'new waiter'
+      },
+      deliveryIdFor: () => 'delivery-after-abort'
+    })
+    await expect(second).resolves.toBe('notified')
+  })
+
+  it('does not leak a waiter slot when abort listener registration throws', async () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    const registrationError = new Error('abort listener registration failed')
+    const brokenSignal = {
+      aborted: false,
+      addEventListener: () => {
+        throw registrationError
+      },
+      removeEventListener: () => {}
+    } as unknown as AbortSignal
+
+    await expect(
+      session.waitForCheckpointAvailability({
+        taskId: 'task-consumer',
+        timeoutMs: 1_000,
+        signal: brokenSignal
+      })
+    ).rejects.toBe(registrationError)
+
+    const controller = new AbortController()
+    const next = session.waitForCheckpointAvailability({
+      taskId: 'task-consumer',
+      timeoutMs: 1_000,
+      signal: controller.signal
+    })
+    controller.abort()
+    await expect(next).resolves.toBe('cancelled')
+  })
+
+  it('times out a blocking checkpoint waiter and releases its waiter slot', async () => {
+    vi.useFakeTimers()
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    const first = session.waitForCheckpointAvailability({
+      taskId: 'task-consumer',
+      timeoutMs: 100
+    })
+
+    await vi.advanceTimersByTimeAsync(100)
+    await expect(first).resolves.toBe('timed_out')
+
+    const controller = new AbortController()
+    const second = session.waitForCheckpointAvailability({
+      taskId: 'task-consumer',
+      timeoutMs: 100,
+      signal: controller.signal
+    })
+    controller.abort()
+    await expect(second).resolves.toBe('cancelled')
   })
 
   it('prepares checkpoint context without acknowledging it until the task explicitly acks', () => {
