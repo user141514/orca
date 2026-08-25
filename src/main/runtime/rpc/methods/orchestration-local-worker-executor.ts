@@ -45,6 +45,7 @@ export class LocalWorkerExecutor implements OrchestrationExecutor {
     }
 
     let config: LocalWorkerExecutionConfig
+    let launch: ReturnType<typeof resolveWorkerLaunchPreferences>
     let taskSpec = task.spec
     try {
       config = parseLocalWorkerExecution(input.execution)
@@ -61,16 +62,16 @@ export class LocalWorkerExecutor implements OrchestrationExecutor {
         throw new Error(`Workspace ${config.worktreeId} resolved as ${workspace.id}.`)
       }
       this.runtime.validateOrchestrationAgentLauncher(config.agent)
+      launch = resolveWorkerLaunchPreferences({
+        agent: config.agent,
+        model: config.model,
+        effort: config.effort
+      })
     } catch (error) {
       failAcceptedDispatch(db, input.dispatchId, error)
       return
     }
 
-    const launch = resolveWorkerLaunchPreferences({
-      agent: config.agent,
-      model: config.model,
-      effort: config.effort
-    })
     await provisionAcceptedLocalWorker({
       runtime: this.runtime,
       db,

@@ -183,6 +183,47 @@ describe('LocalWorkerExecutor', () => {
     )
   })
 
+  it('fails the accepted Dispatch when launch preference validation fails', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    mockWorkerRuntime(runtime)
+
+    const control = new OrchestrationControlPlane(db, 'controller-main')
+    const materialized = control.startPlan({
+      objective: 'reject invalid launch preferences',
+      maxConcurrency: 1,
+      tasks: [
+        {
+          key: 'worker',
+          spec: 'perform local work',
+          execution: {
+            backend: 'local-worker',
+            config: { worktreeId: 'repo::worker', agent: 'codex', effort: 'high' }
+          }
+        }
+      ]
+    })
+    const scheduler = new OrchestrationScheduler(db, 'controller-main')
+    scheduler.useRun(materialized.run.id)
+    const started = scheduler.tick().started[0]!
+    const executor = new LocalWorkerExecutor(runtime)
+
+    await executor.execute({
+      runId: materialized.run.id,
+      taskId: started.taskId,
+      dispatchId: started.dispatchId,
+      execution: started.execution
+    })
+
+    expect(db.getWorkerDispatch(started.dispatchId)).toMatchObject({
+      state: 'failed',
+      stage: 'execution_config',
+      last_error: '--effort requires --model.'
+    })
+    expect(runtime.createTerminal).not.toHaveBeenCalled()
+  })
+
   it('fails the accepted Dispatch when task input resolution fails', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = new OrcaRuntimeService()
