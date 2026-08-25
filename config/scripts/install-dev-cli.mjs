@@ -2,7 +2,7 @@
 // Installs the orca-dev wrapper on PATH after `pnpm run build:cli`.
 // Prefer the traditional global location, but fall back to the user-local bin
 // so unprivileged development checkouts work without sudo.
-import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs'
+import { lstatSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
@@ -19,6 +19,18 @@ if (commandPaths.length === 0) {
   process.exit(0)
 }
 
+function pathEntryExists(target) {
+  try {
+    lstatSync(target)
+    return true
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') {
+      return false
+    }
+    throw error
+  }
+}
+
 function isOwnedByUs(target) {
   try {
     if (!lstatSync(target).isSymbolicLink()) {
@@ -31,7 +43,7 @@ function isOwnedByUs(target) {
 }
 
 for (const commandPath of commandPaths) {
-  if (existsSync(commandPath)) {
+  if (pathEntryExists(commandPath)) {
     if (isOwnedByUs(commandPath)) {
       console.log(`[orca-dev] ${commandPath} already points to dev CLI.`)
       process.exit(0)
