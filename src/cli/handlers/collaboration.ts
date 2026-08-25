@@ -12,6 +12,12 @@ type CollaborationMessage = {
   body: string
 }
 
+type CollaborationPublishResult = {
+  messageId: string
+  deliveryIds: string[]
+  replayed: boolean
+}
+
 type CollaborationCheckpointResult = {
   entries: {
     deliveryId: string
@@ -31,6 +37,22 @@ type CollaborationAcknowledgement = {
 }
 
 export const COLLABORATION_HANDLERS: Record<string, CommandHandler> = {
+  'collaboration publish': async ({ flags, client, json }) => {
+    const authority = readAuthorityFlags(flags)
+    const response = await client.call<CollaborationPublishResult>(
+      'collaboration.publish',
+      {
+        ...authority.params,
+        publicationId: getRequiredStringFlag(flags, 'publication-id'),
+        topic: getRequiredStringFlag(flags, 'topic'),
+        type: getRequiredStringFlag(flags, 'type'),
+        priority: readPriorityFlag(flags),
+        body: getRequiredStringFlag(flags, 'body')
+      },
+      { orchestrationCapability: authority.dispatchCapability }
+    )
+    printResult(response, json, formatPublish)
+  },
   'collaboration checkpoint': async ({ flags, client, json }) => {
     const authority = readAuthorityFlags(flags)
     const response = await client.call<CollaborationCheckpointResult>(
@@ -66,6 +88,14 @@ function readAuthorityFlags(flags: Map<string, string | boolean>): {
   }
 }
 
+function readPriorityFlag(flags: Map<string, string | boolean>): CollaborationMessage['priority'] {
+  const priority = getRequiredStringFlag(flags, 'priority')
+  if (priority !== 'normal' && priority !== 'high' && priority !== 'urgent') {
+    throw new RuntimeClientError('invalid_argument', '--priority must be normal, high, or urgent')
+  }
+  return priority
+}
+
 function parseAcknowledgements(raw: string): CollaborationAcknowledgement[] {
   let parsed: unknown
   try {
@@ -92,6 +122,16 @@ function parseAcknowledgements(raw: string): CollaborationAcknowledgement[] {
     )
   }
   return parsed as CollaborationAcknowledgement[]
+}
+
+function formatPublish(result: CollaborationPublishResult): string {
+  const verb = result.replayed ? 'Replayed' : 'Published'
+  const count = result.deliveryIds.length
+  if (count === 0) {
+    return `${verb} ${result.messageId} to 0 subscribers.`
+  }
+  const noun = count === 1 ? 'subscriber' : 'subscribers'
+  return `${verb} ${result.messageId} to ${count} ${noun}: ${result.deliveryIds.join(', ')}`
 }
 
 function formatCheckpoint(result: CollaborationCheckpointResult): string {

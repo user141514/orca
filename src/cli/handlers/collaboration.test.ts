@@ -9,6 +9,158 @@ afterEach(() => {
 })
 
 describe('collaboration CLI handlers', () => {
+  it('publishes with stable publication identity and Dispatch capability in the RPC envelope', async () => {
+    const call = vi.fn().mockResolvedValue({
+      result: {
+        messageId: 'pub-1',
+        deliveryIds: ['delivery-1'],
+        replayed: false
+      }
+    })
+    const client = { call } as unknown as RuntimeClient
+
+    await COLLABORATION_HANDLERS['collaboration publish']({
+      flags: new Map([
+        ['from', 'term_worker'],
+        ['task-id', 'task_1'],
+        ['dispatch-id', 'ctx_1'],
+        ['dispatch-capability', 'dcap_secret'],
+        ['publication-id', 'pub-1'],
+        ['topic', '/findings'],
+        ['type', 'finding'],
+        ['priority', 'high'],
+        ['body', 'schema v31 is risky']
+      ]),
+      client,
+      cwd: '/tmp/repo',
+      json: false
+    })
+
+    expect(call).toHaveBeenCalledWith(
+      'collaboration.publish',
+      {
+        from: 'term_worker',
+        taskId: 'task_1',
+        dispatchId: 'ctx_1',
+        publicationId: 'pub-1',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'high',
+        body: 'schema v31 is risky'
+      },
+      { orchestrationCapability: 'dcap_secret' }
+    )
+    expect(log.mock.calls.flat().join('\n')).toContain(
+      'Published pub-1 to 1 subscriber: delivery-1'
+    )
+  })
+
+  it('surfaces replayed zero-subscriber publications without changing their identity', async () => {
+    const call = vi.fn().mockResolvedValue({
+      result: {
+        messageId: 'pub-empty',
+        deliveryIds: [],
+        replayed: true
+      }
+    })
+    const client = { call } as unknown as RuntimeClient
+
+    await COLLABORATION_HANDLERS['collaboration publish']({
+      flags: new Map([
+        ['from', 'term_worker'],
+        ['task-id', 'task_1'],
+        ['dispatch-id', 'ctx_1'],
+        ['dispatch-capability', 'dcap_secret'],
+        ['publication-id', 'pub-empty'],
+        ['topic', '/unused'],
+        ['type', 'finding'],
+        ['priority', 'normal'],
+        ['body', 'no subscribers']
+      ]),
+      client,
+      cwd: '/tmp/repo',
+      json: false
+    })
+
+    expect(log.mock.calls.flat().join('\n')).toContain('Replayed pub-empty to 0 subscribers.')
+  })
+
+  it('rejects an invalid publish priority before calling the runtime', async () => {
+    const call = vi.fn()
+    const client = { call } as unknown as RuntimeClient
+
+    await expect(
+      COLLABORATION_HANDLERS['collaboration publish']({
+        flags: new Map([
+          ['from', 'term_worker'],
+          ['task-id', 'task_1'],
+          ['dispatch-id', 'ctx_1'],
+          ['dispatch-capability', 'dcap_secret'],
+          ['publication-id', 'pub-invalid'],
+          ['topic', '/findings'],
+          ['type', 'finding'],
+          ['priority', 'critical'],
+          ['body', 'bad priority']
+        ]),
+        client,
+        cwd: '/tmp/repo',
+        json: false
+      })
+    ).rejects.toMatchObject({ code: 'invalid_argument' })
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('propagates publication conflict failures from the runtime', async () => {
+    const conflict = Object.assign(new Error('publication conflict'), {
+      code: 'collaboration_publication_conflict'
+    })
+    const call = vi.fn().mockRejectedValue(conflict)
+    const client = { call } as unknown as RuntimeClient
+
+    await expect(
+      COLLABORATION_HANDLERS['collaboration publish']({
+        flags: new Map([
+          ['from', 'term_worker'],
+          ['task-id', 'task_1'],
+          ['dispatch-id', 'ctx_1'],
+          ['dispatch-capability', 'dcap_secret'],
+          ['publication-id', 'pub-conflict'],
+          ['topic', '/findings'],
+          ['type', 'finding'],
+          ['priority', 'normal'],
+          ['body', 'changed content']
+        ]),
+        client,
+        cwd: '/tmp/repo',
+        json: false
+      })
+    ).rejects.toBe(conflict)
+  })
+
+  it('rejects a missing publication id before calling the runtime', async () => {
+    const call = vi.fn()
+    const client = { call } as unknown as RuntimeClient
+
+    await expect(
+      COLLABORATION_HANDLERS['collaboration publish']({
+        flags: new Map([
+          ['from', 'term_worker'],
+          ['task-id', 'task_1'],
+          ['dispatch-id', 'ctx_1'],
+          ['dispatch-capability', 'dcap_secret'],
+          ['topic', '/findings'],
+          ['type', 'finding'],
+          ['priority', 'normal'],
+          ['body', 'missing identity']
+        ]),
+        client,
+        cwd: '/tmp/repo',
+        json: false
+      })
+    ).rejects.toMatchObject({ code: 'invalid_argument' })
+    expect(call).not.toHaveBeenCalled()
+  })
+
   it('calls checkpoint with Dispatch identity and passes the capability in the RPC envelope', async () => {
     const call = vi.fn().mockResolvedValue({
       result: {

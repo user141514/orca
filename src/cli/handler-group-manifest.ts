@@ -24,7 +24,7 @@ export const HANDLER_GROUPS: readonly HandlerGroup[] = [
   },
   {
     name: 'collaboration',
-    keys: ['collaboration checkpoint', 'collaboration checkpoint-ack'],
+    keys: ['collaboration publish', 'collaboration checkpoint', 'collaboration checkpoint-ack'],
     load: async () => (await import('./handlers/collaboration.js')).COLLABORATION_HANDLERS
   },
   {
