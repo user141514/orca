@@ -42,6 +42,26 @@ describe('orchestration plan CLI handlers', () => {
     expect(callMock).toHaveBeenCalledWith('orchestration.planCreate', plan)
   })
 
+  it('keeps the client timeout above an explicit long plan wait', async () => {
+    callMock.mockResolvedValue({ result: { runId: 'run_plan', state: 'completed' } })
+
+    await ORCHESTRATION_HANDLERS['orchestration plan-run']({
+      flags: new Map([
+        ['run', 'run_plan'],
+        ['wait-timeout-ms', '90000000']
+      ]),
+      client: { call: callMock },
+      cwd: '/tmp/repo',
+      json: true
+    } as never)
+
+    expect(callMock).toHaveBeenCalledWith(
+      'orchestration.planRun',
+      { run: 'run_plan', waitTimeoutMs: 90_000_000 },
+      { timeoutMs: 90_010_000 }
+    )
+  })
+
   it('runs or resumes a durable plan with a long-lived client timeout', async () => {
     callMock.mockResolvedValue({ result: { runId: 'run_plan', state: 'completed' } })
 

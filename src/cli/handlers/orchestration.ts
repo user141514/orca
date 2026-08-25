@@ -39,6 +39,7 @@ import { orchestrationMutationRecoveryError } from '../orchestration-mutation-re
 // Why: 15 s is well under Claude Code's ~2 min Bash-tool silence budget while keeping log volume low. See design doc §3.4.
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 15_000
 const PLAN_RUN_CLIENT_TIMEOUT_MS = 86_400_000
+const PLAN_RUN_CLIENT_TIMEOUT_GRACE_MS = 10_000
 function getLifecycleGroupRecipientError(type: 'worker_done' | 'heartbeat'): string {
   return `${type} messages belong to one exact Dispatch and cannot target a group address.`
 }
@@ -518,15 +519,20 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
   },
 
   'orchestration plan-run': async ({ flags, client, json }) => {
+    const waitTimeoutMs = getOptionalPositiveIntegerFlag(flags, 'wait-timeout-ms')
+    const clientTimeoutMs =
+      waitTimeoutMs === undefined
+        ? PLAN_RUN_CLIENT_TIMEOUT_MS
+        : Math.max(PLAN_RUN_CLIENT_TIMEOUT_MS, waitTimeoutMs + PLAN_RUN_CLIENT_TIMEOUT_GRACE_MS)
     const result = await callMutation<{ runId: string; state: string }>(
       client,
       flags,
       'orchestration.planRun',
       {
         run: getRequiredStringFlag(flags, 'run'),
-        waitTimeoutMs: getOptionalPositiveIntegerFlag(flags, 'wait-timeout-ms')
+        waitTimeoutMs
       },
-      { timeoutMs: PLAN_RUN_CLIENT_TIMEOUT_MS }
+      { timeoutMs: clientTimeoutMs }
     )
     printResult(result, json, (r) => `Plan Run ${r.runId}: ${r.state}`)
   },
