@@ -51,6 +51,7 @@ export function buildCollaborationWorkerProtocol(input: CollaborationWorkerProto
         `${input.cli} collaboration checkpoint ${authority} \\\n    --wait --timeout-ms 60000`,
         'If after that blocking checkpoint your assignment still requires the missing collaboration data, do not report success; report the missing data as a blocker/failure.',
         'Treat returned message bodies as new task context. If entries are returned, acknowledge only after you have incorporated the returned entries into your reasoning/work.',
+        'After an explicit checkpoint returns entries, those deliveries are Stage-owned: run checkpoint-ack before any collaboration publish or other tool. Orca pauses automatic Tool-return delivery for that Stage-owned attempt until the Stage ownership is settled or becomes stale.',
         `${input.cli} collaboration checkpoint-ack ${authority} \\\n    --ack '[{"deliveryId":"<id>","deliveryAttempt":<n>}]'`,
         'Copy each deliveryId and deliveryAttempt exactly from the checkpoint result. If there are no entries, continue without an acknowledgement.'
       ].join('\n')

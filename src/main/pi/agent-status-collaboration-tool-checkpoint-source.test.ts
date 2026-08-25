@@ -1,145 +1,12 @@
-import { runInNewContext } from 'node:vm'
-import ts from 'typescript-api'
 import { describe, expect, it, vi } from 'vitest'
-import { getPiAgentStatusExtensionSource } from './agent-status-extension-source'
-
-type HookHandler = (event?: unknown, context?: unknown) => unknown
-
-type Harness = {
-  fetchMock: ReturnType<typeof vi.fn>
-  handlers: Record<string, HookHandler>
-  callHook(name: string, event?: unknown, context?: unknown): Promise<unknown>
-}
-
-const BASE_ENV = {
-  ORCA_PANE_KEY: 'pane-1',
-  ORCA_AGENT_LAUNCH_TOKEN: 'launch-1',
-  ORCA_TAB_ID: 'tab-1',
-  ORCA_WORKTREE_ID: 'tree-1',
-  ORCA_AGENT_HOOK_PORT: '4321',
-  ORCA_AGENT_HOOK_TOKEN: 'token-1',
-  ORCA_AGENT_HOOK_ENV: 'env-1',
-  ORCA_AGENT_HOOK_VERSION: '1.2.3'
-} satisfies Record<string, string>
-
-function createHarness(args: {
-  kind: 'pi' | 'omp' | 'prime-agent'
-  fetchImpl?: (...params: Parameters<typeof fetch>) => Promise<unknown>
-}): Harness {
-  const fetchMock = vi.fn(args.fetchImpl ?? (async () => ({ ok: true })))
-  const module = {
-    exports: {} as { default?: (pi: { on: (name: string, handler: HookHandler) => void }) => void }
-  }
-  const fsMock = {
-    existsSync: vi.fn(() => false),
-    statSync: vi.fn(() => {
-      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-    }),
-    readFileSync: vi.fn(() => {
-      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-    })
-  }
-  const child = { on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn() } }
-  const requireMock = vi.fn((specifier: string) => {
-    if (specifier === 'fs') {
-      return fsMock
-    }
-    if (specifier === 'child_process') {
-      return { spawn: vi.fn(() => child) }
-    }
-    throw new Error(`unexpected require(${specifier})`)
-  })
-  const processMock = {
-    env: {
-      ...BASE_ENV,
-      ...(args.kind === 'prime-agent' ? { PRIME_AGENT_INTERNAL_DAEMON_WORKER: '1' } : {})
-    },
-    pid: 4242,
-    title: 'node',
-    argv: ['node', '/usr/bin/orca']
-  }
-  const context = {
-    module,
-    exports: module.exports,
-    require: requireMock,
-    process: processMock,
-    fetch: fetchMock,
-    console: { warn: vi.fn(), error: vi.fn(), log: vi.fn() },
-    Promise,
-    Buffer,
-    URL,
-    AbortController,
-    setTimeout,
-    clearTimeout
-  } as Record<string, unknown>
-  context.globalThis = context
-
-  const output = ts.transpileModule(getPiAgentStatusExtensionSource(args.kind), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
-  }).outputText
-  runInNewContext(output, context)
-  const register = module.exports.default
-  if (!register) {
-    throw new Error('expected Pi extension default export')
-  }
-  const handlers: Record<string, HookHandler> = {}
-  register({ on: (name, handler) => (handlers[name] = handler) })
-  return {
-    fetchMock,
-    handlers,
-    callHook: async (name, event, hookContext) => await handlers[name]?.(event, hookContext)
-  }
-}
-
-const TOOL_RESULT_EVENT = {
-  type: 'tool_result',
-  toolCallId: 'call-1',
-  toolName: 'bash',
-  input: { command: 'echo hello' },
-  content: [{ type: 'text', text: 'original tool output' }],
-  details: {},
-  isError: false
-}
-
-function patchText(attempt = 1): string {
-  return `original tool output\n=== COLLABORATION CONTEXT PATCH ===\ndelivery delivery-1 attempt=${attempt}\n/findings finding high producer=producer\nschema v31 is risky`
-}
-
-function providerRequestWithPatch(attempt = 1) {
-  return {
-    type: 'before_provider_request',
-    payload: { messages: [{ role: 'tool', content: [{ type: 'text', text: patchText(attempt) }] }] }
-  }
-}
-
-const ASSISTANT_MESSAGE_START = {
-  type: 'message_start',
-  message: { role: 'assistant', content: [] }
-}
-
-function preparedResult(attempt = 1) {
-  return {
-    active: true,
-    entries: [
-      {
-        deliveryId: 'delivery-1',
-        deliveryAttempt: attempt,
-        message: {
-          id: 'message-1',
-          topic: '/findings',
-          type: 'finding',
-          priority: 'high',
-          producerKey: 'producer',
-          body: 'schema v31 is risky'
-        }
-      }
-    ]
-  }
-}
-
-function settledAck(active = true) {
-  return { active, ackedDeliveryIds: active ? ['delivery-1'] : [], ignoredDeliveryIds: [] }
-}
+import {
+  ASSISTANT_MESSAGE_START,
+  TOOL_RESULT_EVENT,
+  createHarness,
+  preparedResult,
+  providerRequestWithPatch,
+  settledAck
+} from './agent-status-collaboration-tool-checkpoint-test-harness'
 
 describe('Pi collaboration tool-return checkpoint extension', () => {
   it('registers tool-return checkpoint handlers only for Pi', () => {
@@ -153,19 +20,132 @@ describe('Pi collaboration tool-return checkpoint extension', () => {
     }
   })
 
-  it.each([
-    'orca-dev collaboration checkpoint --from term_worker --task-id task_1 --dispatch-id ctx_1',
-    'orca collaboration checkpoint-ack --from term_worker --task-id task_1 --dispatch-id ctx_1 --ack []',
-    '/usr/local/bin/orca-ide collaboration checkpoint --from term_worker --task-id task_1 --dispatch-id ctx_1 --wait'
-  ])('does not auto-prepare on explicit stage-checkpoint results: %s', async (command) => {
+  it('suspends auto injection while an explicit stage delivery awaits manual acknowledgement', async () => {
     const harness = createHarness({
       kind: 'pi',
-      fetchImpl: vi.fn(async () => ({ ok: true, json: async () => preparedResult() }))
+      fetchImpl: vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => preparedResult(1, 'delivery-stage')
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => preparedResult(1, 'delivery-auto')
+        })
+    })
+    const stageResult = {
+      ...TOOL_RESULT_EVENT,
+      input: { command: 'orca-dev collaboration checkpoint --from term_worker' },
+      content: [{ type: 'text', text: 'delivery delivery-stage attempt=1\n/findings finding' }]
+    }
+    expect(await harness.callHook('tool_result', stageResult)).toBeUndefined()
+
+    const publishResult = {
+      ...TOOL_RESULT_EVENT,
+      toolCallId: 'call-publish',
+      input: { command: 'orca-dev collaboration publish --topic /review' }
+    }
+    expect(await harness.callHook('tool_result', publishResult)).toBeUndefined()
+    expect(harness.fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(harness.fetchMock.mock.calls[0]?.[0])).toContain('/prepare')
+
+    const ackResult = {
+      ...TOOL_RESULT_EVENT,
+      toolCallId: 'call-ack',
+      input: { command: 'orca-dev collaboration checkpoint-ack --ack []' },
+      content: [{ type: 'text', text: 'Acknowledged 1: delivery-stage' }]
+    }
+    expect(await harness.callHook('tool_result', ackResult)).toBeUndefined()
+
+    expect(
+      await harness.callHook('tool_result', { ...TOOL_RESULT_EVENT, toolCallId: 'call-after-ack' })
+    ).toBeDefined()
+    expect(harness.fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases stale local Stage ownership after an ignored acknowledgement so auto can recover', async () => {
+    const harness = createHarness({
+      kind: 'pi',
+      fetchImpl: vi.fn(async () => ({
+        ok: true,
+        json: async () => preparedResult(2, 'delivery-stage')
+      }))
+    })
+    await harness.callHook('tool_result', {
+      ...TOOL_RESULT_EVENT,
+      input: { command: 'orca-dev collaboration checkpoint --from term_worker' },
+      content: [{ type: 'text', text: 'delivery delivery-stage attempt=1\n/findings finding' }]
+    })
+    await harness.callHook('tool_result', {
+      ...TOOL_RESULT_EVENT,
+      toolCallId: 'call-ignored',
+      input: { command: 'orca-dev collaboration checkpoint-ack --ack []' },
+      content: [{ type: 'text', text: 'Acknowledged 0\nIgnored 1: delivery-stage' }]
+    })
+    const recovered = (await harness.callHook('tool_result', {
+      ...TOOL_RESULT_EVENT,
+      toolCallId: 'call-recover'
+    })) as { content?: { type: string; text?: string }[] }
+    expect(recovered.content?.[1]?.text).toContain('delivery delivery-stage attempt=2')
+    expect(harness.fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps Stage ownership when explicit checkpoint-ack fails', async () => {
+    const harness = createHarness({
+      kind: 'pi',
+      fetchImpl: vi.fn(async () => ({
+        ok: true,
+        json: async () => preparedResult(1, 'delivery-stage')
+      }))
+    })
+    await harness.callHook('tool_result', {
+      ...TOOL_RESULT_EVENT,
+      input: { command: 'orca-dev collaboration checkpoint --from term_worker' },
+      content: [{ type: 'text', text: 'delivery delivery-stage attempt=1\n/findings finding' }]
+    })
+    await harness.callHook('tool_result', {
+      ...TOOL_RESULT_EVENT,
+      toolCallId: 'call-ack-error',
+      input: { command: 'orca-dev collaboration checkpoint-ack --ack []' },
+      content: [{ type: 'text', text: 'dispatch capability invalid' }],
+      isError: true
     })
     expect(
-      await harness.callHook('tool_result', { ...TOOL_RESULT_EVENT, input: { command } })
+      await harness.callHook('tool_result', {
+        ...TOOL_RESULT_EVENT,
+        toolCallId: 'call-after-error'
+      })
     ).toBeUndefined()
-    expect(harness.fetchMock).not.toHaveBeenCalled()
+    expect(harness.fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('tracks Stage ownership from JSON checkpoint output', async () => {
+    const harness = createHarness({
+      kind: 'pi',
+      fetchImpl: vi.fn(async () => ({
+        ok: true,
+        json: async () => preparedResult(2, 'delivery-json')
+      }))
+    })
+    await harness.callHook('tool_result', {
+      ...TOOL_RESULT_EVENT,
+      input: { command: 'orca-dev collaboration checkpoint --json --from term_worker' },
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            result: {
+              entries: [{ deliveryId: 'delivery-json', deliveryAttempt: 2, message: {} }]
+            }
+          })
+        }
+      ]
+    })
+    expect(
+      await harness.callHook('tool_result', { ...TOOL_RESULT_EVENT, toolCallId: 'call-after-json' })
+    ).toBeUndefined()
+    expect(harness.fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('acks only after the patch is in provider payload and the assistant stream starts', async () => {

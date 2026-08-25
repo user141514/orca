@@ -58,6 +58,8 @@ describe('buildCollaborationWorkerProtocol', () => {
       'If after that blocking checkpoint your assignment still requires the missing collaboration data, do not report success'
     )
     expect(result).toContain('acknowledge only after you have incorporated the returned entries')
+    expect(result).toContain('those deliveries are Stage-owned')
+    expect(result).toContain('run checkpoint-ack before any collaboration publish or other tool')
     expect(result).not.toContain('collaboration publish --from')
   })
 
