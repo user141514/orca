@@ -15,6 +15,7 @@ import {
 } from './federation-ack-checkpoints'
 import { parseFederatedWorkerReportPayload } from './federation-worker-report-payload'
 import { bindCoordinatorMutationPayload } from './dispatch-message-binding'
+import { applyFederatedCollaborationCompletionGuard } from './federation-collaboration-completion'
 
 const MESSAGE_TYPE_SET = new Set<MessageType>(MESSAGE_TYPES)
 const FEDERATION_PULL_PAGE_SIZE = 50
@@ -100,6 +101,11 @@ async function syncFederatedDispatchPages(
       )
     }
     const message = parseRelayedMessage(item.payload)
+    const lifecycle = applyFederatedCollaborationCompletionGuard(
+      runtime,
+      dispatch.run_id,
+      parseFederatedLifecycle(message, item.message_id, dispatchId, dispatch.task_id)
+    )
     const stored = db.importFederatedRelayItem({
       dispatchId,
       sequence: item.sequence,
@@ -115,7 +121,7 @@ async function syncFederatedDispatchPages(
         threadId: message.threadId ?? undefined,
         payload: bindCoordinatorMutationPayload(message.type, message.payload, dispatchId)
       },
-      lifecycle: parseFederatedLifecycle(message, item.message_id, dispatchId, dispatch.task_id)
+      lifecycle
     })
     if (stored.lifecycle && supportsLifecycleSettlement) {
       settlements.push({

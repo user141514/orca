@@ -6,6 +6,7 @@ import {
 } from '../../orchestration/orchestration-control-plane'
 import { OrchestrationExecutorRouter } from '../../orchestration/orchestration-executor-router'
 import { RuntimeOrchestrationRunner } from '../../orchestration/orchestration-runtime-runner'
+import { unregisterCollaborationPublicationObligations } from '../../collaboration-runtime/collaboration-publication-obligations'
 import { defineMethod, type RpcMethod, type RpcContext } from '../core'
 import { OptionalString, requiredString } from '../schemas'
 import { LocalWorkerExecutor } from './orchestration-local-worker-executor'
@@ -65,7 +66,11 @@ export const ORCHESTRATION_PLAN_METHODS: RpcMethod[] = [
         executor,
         { waitTimeoutMs: params.waitTimeoutMs, signal: ctx.signal }
       )
-      return runner.runExisting(params.run)
+      const result = await runner.runExisting(params.run)
+      if (result.state === 'completed') {
+        unregisterCollaborationPublicationObligations(ctx.runtime, params.run)
+      }
+      return result
     }
   })
 ]
