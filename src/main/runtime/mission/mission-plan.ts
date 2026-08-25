@@ -110,7 +110,34 @@ export function parseMissionPlan(raw: string): MissionPlan {
       }
     }
   }
+  assertAcyclicMissionTasks(parsed.data.tasks)
   return parsed.data
+}
+
+function assertAcyclicMissionTasks(
+  tasks: readonly { key: string; deps: readonly string[] }[]
+): void {
+  const tasksByKey = new Map(tasks.map((task) => [task.key, task]))
+  const states = new Map<string, 'visiting' | 'visited'>()
+
+  const visit = (key: string): void => {
+    const state = states.get(key)
+    if (state === 'visiting') {
+      throw new Error(`Mission plan task dependency cycle detected: ${key}`)
+    }
+    if (state === 'visited') {
+      return
+    }
+    states.set(key, 'visiting')
+    for (const dependency of tasksByKey.get(key)?.deps ?? []) {
+      visit(dependency)
+    }
+    states.set(key, 'visited')
+  }
+
+  for (const task of tasks) {
+    visit(task.key)
+  }
 }
 
 function stripMarkdownFence(raw: string): string {

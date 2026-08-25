@@ -157,6 +157,38 @@ describe('Mission planning contract', () => {
     ).toThrow('Duplicate Mission plan task key: same')
   })
 
+  it('rejects a self dependency cycle', () => {
+    expect(() =>
+      parseMissionPlan(
+        JSON.stringify({
+          mode: 'orchestration',
+          objective: 'self cycle',
+          maxConcurrency: 1,
+          tasks: [
+            { key: 'self', spec: 'self', deps: ['self'] },
+            { key: 'other', spec: 'other', deps: [] }
+          ]
+        })
+      )
+    ).toThrow('Mission plan task dependency cycle detected: self')
+  })
+
+  it('rejects a multi-task dependency cycle', () => {
+    expect(() =>
+      parseMissionPlan(
+        JSON.stringify({
+          mode: 'orchestration',
+          objective: 'two task cycle',
+          maxConcurrency: 2,
+          tasks: [
+            { key: 'a', spec: 'a', deps: ['b'] },
+            { key: 'b', spec: 'b', deps: ['a'] }
+          ]
+        })
+      )
+    ).toThrow('Mission plan task dependency cycle detected: a')
+  })
+
   it('rejects unknown dependency keys', () => {
     expect(() =>
       parseMissionPlan(
