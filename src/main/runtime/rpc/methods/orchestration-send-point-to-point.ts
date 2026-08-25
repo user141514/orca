@@ -2,7 +2,13 @@ import type { MessagePriority, MessageType, OrchestrationDb } from '../../orches
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import { reconcileLifecycleMessage } from '../../orchestration/lifecycle-reconciliation'
 import { bindCoordinatorMutationPayload } from '../../orchestration/dispatch-message-binding'
-import { isDispatchMutationMessageType, parseMessageTaskId } from './orchestration-schemas'
+import { getCollaborationWorkerCompletionBlock } from '../../collaboration/collaboration-worker-completion'
+import {
+  isDispatchMutationMessageType,
+  isWorkerReportOutcome,
+  parseMessageTaskId,
+  parseRemoteWorkerPayload
+} from './orchestration-schemas'
 import type { SendParams } from './orchestration-schemas'
 import { legacyWorkerDeliveryContract } from './orchestration-routing'
 import type { SendRecipientWarning } from './orchestration-recipient-routing'
@@ -88,6 +94,29 @@ export function sendPointToPointMessage(args: {
         message: rejection,
         lifecycle: { action: 'rejected', code: authority.code, reason: authority.reason }
       })
+    }
+  }
+
+  if (msg.type === 'worker_done' && dispatch) {
+    const report = parseRemoteWorkerPayload(msg.payload ?? undefined)
+    const taskId = typeof report.taskId === 'string' ? report.taskId : undefined
+    const dispatchId = typeof report.dispatchId === 'string' ? report.dispatchId : undefined
+    const outcome = isWorkerReportOutcome(report.outcome) ? report.outcome : undefined
+    if (taskId === dispatch.task_id && dispatchId === dispatch.id && outcome) {
+      const block = getCollaborationWorkerCompletionBlock(runtime, {
+        runId: dispatch.run_id,
+        taskId: dispatch.task_id,
+        outcome
+      })
+      if (block) {
+        const rejection =
+          db.convertLifecycleMessageToRejection(msg.id, block.code, block.reason) ?? msg
+        runtime.notifyMessageArrived(rejection.to_handle, rejection.type)
+        return withSendWarnings({
+          message: rejection,
+          lifecycle: { action: 'rejected', code: block.code, reason: block.reason }
+        })
+      }
     }
   }
 
