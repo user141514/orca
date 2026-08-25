@@ -15,11 +15,27 @@ export type CollaborationDeliveryIdFactory = (input: {
   message: CollaborationMessage
 }) => string
 
+export class CollaborationPublicationConflictError extends Error {
+  constructor(readonly publicationId: string) {
+    super(`Collaboration publication id reused with different content: ${publicationId}`)
+    this.name = 'CollaborationPublicationConflictError'
+  }
+}
+
+type CollaborationPublicationReceipt = {
+  message: CollaborationMessage
+  deliveryIds: readonly string[]
+}
+
 export class CollaborationRuntimeSession {
   private readonly mailbox = new CollaborationMailbox()
   private readonly routing
   private readonly stepKeyByTaskId = new Map<string, string>()
   private readonly admissionByStepKey = new Map<string, CollaborationAdmissionPolicy>()
+  private readonly publicationsByStepKey = new Map<
+    string,
+    Map<string, CollaborationPublicationReceipt>
+  >()
 
   constructor(options: {
     plan: CollaborationPlan
@@ -47,6 +63,31 @@ export class CollaborationRuntimeSession {
       }
       this.stepKeyByTaskId.set(taskId, stepKey)
     }
+  }
+
+  publishFromTask(options: {
+    taskId: string
+    message: Omit<CollaborationMessage, 'producerKey'>
+    deliveryIdFor: CollaborationDeliveryIdFactory
+  }): { deliveryIds: readonly string[]; replayed: boolean } {
+    const stepKey = this.stepKeyByTaskId.get(options.taskId)
+    if (!stepKey) {
+      throw new Error(`Unknown collaboration task: ${options.taskId}`)
+    }
+    const message: CollaborationMessage = { ...options.message, producerKey: stepKey }
+    const publications = this.publicationsByStepKey.get(stepKey) ?? new Map()
+    const existing = publications.get(message.id)
+    if (existing) {
+      if (!sameCollaborationMessage(existing.message, message)) {
+        throw new CollaborationPublicationConflictError(message.id)
+      }
+      return { deliveryIds: [...existing.deliveryIds], replayed: true }
+    }
+
+    const deliveryIds = this.publish(message, options.deliveryIdFor)
+    publications.set(message.id, { message, deliveryIds: [...deliveryIds] })
+    this.publicationsByStepKey.set(stepKey, publications)
+    return { deliveryIds: [...deliveryIds], replayed: false }
   }
 
   publish(message: CollaborationMessage, deliveryIdFor: CollaborationDeliveryIdFactory): string[] {
@@ -127,4 +168,18 @@ export class CollaborationRuntimeSession {
     }
     return { stepKey, policy }
   }
+}
+
+function sameCollaborationMessage(
+  left: CollaborationMessage,
+  right: CollaborationMessage
+): boolean {
+  return (
+    left.id === right.id &&
+    left.topic === right.topic &&
+    left.type === right.type &&
+    left.priority === right.priority &&
+    left.producerKey === right.producerKey &&
+    left.body === right.body
+  )
 }

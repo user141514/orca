@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { getCollaborationRuntimeSession } from '../../collaboration-runtime/collaboration-runtime-registry'
+import { CollaborationPublicationConflictError } from '../../collaboration/collaboration-runtime-session'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { DispatchContextRow } from '../../orchestration/types'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
@@ -13,6 +15,14 @@ const CollaborationAuthorityParams = z.object({
   from: requiredString('Collaboration checkpoint requires a sender terminal'),
   taskId: requiredString('Collaboration checkpoint requires a task ID'),
   dispatchId: requiredString('Collaboration checkpoint requires a Dispatch ID')
+})
+
+const CollaborationPublishParams = CollaborationAuthorityParams.extend({
+  publicationId: requiredString('Collaboration publish requires a publication ID'),
+  topic: requiredString('Collaboration publish requires a topic'),
+  type: requiredString('Collaboration publish requires a message type'),
+  priority: z.enum(['normal', 'high', 'urgent']),
+  body: requiredString('Collaboration publish requires a body')
 })
 
 const CollaborationCheckpointParams = CollaborationAuthorityParams
@@ -30,6 +40,37 @@ const CollaborationCheckpointAckParams = CollaborationAuthorityParams.extend({
 type CollaborationAuthorityInput = z.infer<typeof CollaborationAuthorityParams>
 
 export const COLLABORATION_METHODS: RpcMethod[] = [
+  defineMethod({
+    name: 'collaboration.publish',
+    params: CollaborationPublishParams,
+    handler: async (params, { runtime, orchestrationCapability }) => {
+      const dispatch = requireCollaborationDispatchAuthority(
+        params,
+        runtime,
+        orchestrationCapability
+      )
+      const session = requireCollaborationSession(runtime, dispatch)
+      try {
+        const result = session.publishFromTask({
+          taskId: params.taskId,
+          message: {
+            id: params.publicationId,
+            topic: params.topic,
+            type: params.type,
+            priority: params.priority,
+            body: params.body
+          },
+          deliveryIdFor: () => `collab_delivery_${randomUUID()}`
+        })
+        return { messageId: params.publicationId, ...result }
+      } catch (error) {
+        if (error instanceof CollaborationPublicationConflictError) {
+          throw new OrchestrationError('collaboration_publication_conflict', error.message)
+        }
+        throw error
+      }
+    }
+  }),
   defineMethod({
     name: 'collaboration.checkpoint',
     params: CollaborationCheckpointParams,

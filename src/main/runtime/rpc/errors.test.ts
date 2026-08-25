@@ -14,18 +14,20 @@ class LineageError extends Error {
 }
 
 describe('mapRuntimeError', () => {
-  it.each(['collaboration_session_unavailable', 'sender_not_assignee', 'task_dispatch_mismatch'])(
-    'preserves collaboration checkpoint failure %s across RPC',
-    (code) => {
-      const message = `checkpoint failed: ${code}`
-      const error = Object.assign(new Error(message), { code })
+  it.each([
+    'collaboration_session_unavailable',
+    'collaboration_publication_conflict',
+    'sender_not_assignee',
+    'task_dispatch_mismatch'
+  ])('preserves collaboration checkpoint failure %s across RPC', (code) => {
+    const message = `checkpoint failed: ${code}`
+    const error = Object.assign(new Error(message), { code })
 
-      expect(mapRuntimeError('req_1', { runtimeId: 'runtime-1' }, error)).toMatchObject({
-        ok: false,
-        error: { code, message }
-      })
-    }
-  )
+    expect(mapRuntimeError('req_1', { runtimeId: 'runtime-1' }, error)).toMatchObject({
+      ok: false,
+      error: { code, message }
+    })
+  })
 
   it('preserves the stable skill failure category and retryability across RPC', () => {
     expect(

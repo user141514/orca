@@ -108,6 +108,7 @@ const STRUCTURED_RUNTIME_PASSTHROUGH_CODES: ReadonlySet<string> = new Set([
   'sender_not_assignee',
   'task_dispatch_mismatch',
   'collaboration_session_unavailable',
+  'collaboration_publication_conflict',
   'agent_unconfigured',
   'terminal_worktree_mismatch',
   'request_mismatch',

@@ -34,6 +34,141 @@ function finding(id: string, body: string): CollaborationMessage {
 }
 
 describe('CollaborationRuntimeSession', () => {
+  it('derives the producer step from the authenticated task when publishing', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+
+    const result = session.publishFromTask({
+      taskId: 'task-producer',
+      message: {
+        id: 'message-from-task',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'high',
+        body: 'derived producer'
+      },
+      deliveryIdFor: ({ subscriberKey }) => `delivery-${subscriberKey}`
+    })
+
+    expect(result).toEqual({ deliveryIds: ['delivery-consumer'], replayed: false })
+    const delivery = session.getDelivery('delivery-consumer')
+    expect(delivery?.message).toMatchObject({
+      id: 'message-from-task',
+      producerKey: 'producer',
+      body: 'derived producer'
+    })
+  })
+
+  it('replays an identical publication id without creating duplicate deliveries', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    const publish = () =>
+      session.publishFromTask({
+        taskId: 'task-producer',
+        message: {
+          id: 'publication-stable',
+          topic: '/findings',
+          type: 'finding',
+          priority: 'normal',
+          body: 'same payload'
+        },
+        deliveryIdFor: ({ subscriberKey }) => `delivery-${subscriberKey}`
+      })
+
+    expect(publish()).toEqual({ deliveryIds: ['delivery-consumer'], replayed: false })
+    expect(publish()).toEqual({ deliveryIds: ['delivery-consumer'], replayed: true })
+    expect(session.getDelivery('delivery-consumer')?.message.id).toBe('publication-stable')
+  })
+
+  it('rejects reuse of one publication id for different content', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+    session.publishFromTask({
+      taskId: 'task-producer',
+      message: {
+        id: 'publication-conflict',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'normal',
+        body: 'first payload'
+      },
+      deliveryIdFor: () => 'delivery-first'
+    })
+
+    expect(() =>
+      session.publishFromTask({
+        taskId: 'task-producer',
+        message: {
+          id: 'publication-conflict',
+          topic: '/findings',
+          type: 'finding',
+          priority: 'normal',
+          body: 'different payload'
+        },
+        deliveryIdFor: () => 'delivery-second'
+      })
+    ).toThrow('Collaboration publication id reused with different content: publication-conflict')
+    expect(session.getDelivery('delivery-first')?.message.body).toBe('first payload')
+    expect(session.getDelivery('delivery-second')).toBeUndefined()
+  })
+
+  it('replays publications with no subscribers from the publication receipt', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: {
+        objective: 'No subscribers',
+        maxConcurrency: 1,
+        steps: [{ key: 'producer', instruction: 'Publish.' }]
+      },
+      taskIdsByStepKey: { producer: 'task-producer' },
+      admissionByStepKey: {}
+    })
+    const input = {
+      taskId: 'task-producer',
+      message: {
+        id: 'publication-empty',
+        topic: '/nobody',
+        type: 'finding',
+        priority: 'normal' as const,
+        body: 'nobody listens'
+      },
+      deliveryIdFor: () => 'unreachable'
+    }
+
+    expect(session.publishFromTask(input)).toEqual({ deliveryIds: [], replayed: false })
+    expect(session.publishFromTask(input)).toEqual({ deliveryIds: [], replayed: true })
+  })
+
+  it('rejects publish attempts from tasks outside the collaboration plan', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: PLAN,
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+
+    expect(() =>
+      session.publishFromTask({
+        taskId: 'task-attacker',
+        message: {
+          id: 'message-attacker',
+          topic: '/findings',
+          type: 'finding',
+          priority: 'normal',
+          body: 'spoofed'
+        },
+        deliveryIdFor: () => 'delivery-attacker'
+      })
+    ).toThrow('Unknown collaboration task: task-attacker')
+  })
+
   it('prepares checkpoint context without acknowledging it until the task explicitly acks', () => {
     const session = new CollaborationRuntimeSession({
       plan: PLAN,

@@ -18,12 +18,18 @@ afterEach(() => {
   db = undefined
 })
 
-function collaborationMethod(name: 'collaboration.checkpoint' | 'collaboration.checkpoint-ack') {
+function collaborationMethod(
+  name: 'collaboration.publish' | 'collaboration.checkpoint' | 'collaboration.checkpoint-ack'
+) {
   const method = COLLABORATION_METHODS.find((candidate) => candidate.name === name)
   if (!method) {
     throw new Error(`${name} not registered`)
   }
   return method
+}
+
+function publishMethod() {
+  return collaborationMethod('collaboration.publish')
 }
 
 function checkpointMethod() {
@@ -93,6 +99,131 @@ function setupAuthorizedCheckpoint() {
 
   return { runtime, run, task, dispatch, capability, paneKey, processIncarnation, session }
 }
+
+function setupAuthorizedPublish() {
+  db = new OrchestrationDb(':memory:')
+  const runtime = new OrcaRuntimeService()
+  runtime.setOrchestrationDb(db)
+  const run = db.createRun({ objective: 'publish run' })
+  const producerTask = db.createTask({ runId: run.id, spec: 'Publish findings.' })
+  const consumerTask = db.createTask({ runId: run.id, spec: 'Consume findings.' })
+  const paneKey = 'tab_producer:leaf_producer'
+  const processIncarnation = 'runtime_test:term_producer:1'
+  const dispatch = db.createDispatchContext(
+    producerTask.id,
+    'term_producer',
+    paneKey,
+    undefined,
+    processIncarnation
+  )
+  const capability = db.mintDispatchCapability({
+    dispatchId: dispatch.id,
+    paneKey,
+    processIncarnation
+  })
+  vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue(paneKey)
+  vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockReturnValue(processIncarnation)
+
+  const session = new CollaborationRuntimeSession({
+    plan: {
+      objective: 'publish run',
+      maxConcurrency: 2,
+      steps: [
+        { key: 'producer', instruction: 'Publish findings.' },
+        {
+          key: 'consumer',
+          instruction: 'Consume findings.',
+          subscribesTo: ['/findings']
+        }
+      ]
+    },
+    taskIdsByStepKey: { producer: producerTask.id, consumer: consumerTask.id },
+    admissionByStepKey: {
+      consumer: { acceptedTypes: ['finding'], minPriority: 'normal' }
+    }
+  })
+  registerCollaborationRuntimeSession(runtime, run.id, session)
+  return { runtime, run, producerTask, consumerTask, dispatch, capability, session }
+}
+
+describe('collaboration.publish', () => {
+  it('derives producer identity from the authenticated task and routes to subscribers', async () => {
+    const { runtime, producerTask, dispatch, capability, session } = setupAuthorizedPublish()
+    const method = publishMethod()
+    const params = method.params?.parse({
+      from: 'term_producer',
+      taskId: producerTask.id,
+      dispatchId: dispatch.id,
+      publicationId: 'publication-1',
+      topic: '/findings',
+      type: 'finding',
+      priority: 'high',
+      body: 'Schema v31 is risky.'
+    })
+
+    const result = await method.handler(params, {
+      runtime,
+      orchestrationCapability: capability
+    } as RpcContext)
+
+    expect(result).toMatchObject({
+      messageId: 'publication-1',
+      deliveryIds: [expect.any(String)],
+      replayed: false
+    })
+    const deliveryId = (result as { deliveryIds: string[] }).deliveryIds[0]!
+    expect(session.getDelivery(deliveryId)?.message).toMatchObject({
+      id: 'publication-1',
+      producerKey: 'producer',
+      topic: '/findings',
+      body: 'Schema v31 is risky.'
+    })
+  })
+
+  it('replays the same publication idempotently after a lost response', async () => {
+    const { runtime, producerTask, dispatch, capability, session } = setupAuthorizedPublish()
+    const method = publishMethod()
+    const params = method.params?.parse({
+      from: 'term_producer',
+      taskId: producerTask.id,
+      dispatchId: dispatch.id,
+      publicationId: 'publication-retry',
+      topic: '/findings',
+      type: 'finding',
+      priority: 'normal',
+      body: 'same payload'
+    })
+    const context = { runtime, orchestrationCapability: capability } as RpcContext
+
+    const first = await method.handler(params, context)
+    const replay = await method.handler(params, context)
+
+    expect(first).toMatchObject({ replayed: false })
+    expect(replay).toEqual({ ...(first as object), replayed: true })
+    const deliveryId = (first as { deliveryIds: string[] }).deliveryIds[0]!
+    expect(session.getDelivery(deliveryId)).toBeDefined()
+  })
+
+  it('rejects one publication id reused with different content', async () => {
+    const { runtime, producerTask, dispatch, capability } = setupAuthorizedPublish()
+    const method = publishMethod()
+    const base = {
+      from: 'term_producer',
+      taskId: producerTask.id,
+      dispatchId: dispatch.id,
+      publicationId: 'publication-conflict',
+      topic: '/findings',
+      type: 'finding',
+      priority: 'normal'
+    }
+    const context = { runtime, orchestrationCapability: capability } as RpcContext
+
+    await method.handler(method.params?.parse({ ...base, body: 'first' }), context)
+    await expect(
+      method.handler(method.params?.parse({ ...base, body: 'different' }), context)
+    ).rejects.toMatchObject({ code: 'collaboration_publication_conflict' })
+  })
+})
 
 describe('collaboration.checkpoint', () => {
   it('registers both checkpoint phases in the runtime RPC manifest', () => {
