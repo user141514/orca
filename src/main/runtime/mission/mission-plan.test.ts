@@ -47,7 +47,8 @@ describe('Mission planning contract', () => {
             key: 'producer',
             spec: 'Investigate and publish findings.',
             deps: [],
-            publishesTo: ['/findings']
+            publishesTo: ['/findings'],
+            requiredPublishesTo: ['/findings']
           },
           {
             key: 'consumer',
@@ -62,7 +63,11 @@ describe('Mission planning contract', () => {
     expect(plan).toMatchObject({
       mode: 'orchestration',
       tasks: [
-        { key: 'producer', publishesTo: ['/findings'] },
+        {
+          key: 'producer',
+          publishesTo: ['/findings'],
+          requiredPublishesTo: ['/findings']
+        },
         {
           key: 'consumer',
           subscribesTo: ['/findings'],
@@ -70,6 +75,29 @@ describe('Mission planning contract', () => {
         }
       ]
     })
+  })
+
+  it('rejects required publish topics that are not allowed by publishesTo', () => {
+    expect(() =>
+      parseMissionPlan(
+        JSON.stringify({
+          mode: 'orchestration',
+          objective: 'invalid publish obligation',
+          maxConcurrency: 2,
+          tasks: [
+            {
+              key: 'producer',
+              spec: 'Produce.',
+              publishesTo: ['/findings'],
+              requiredPublishesTo: ['/decision']
+            },
+            { key: 'other', spec: 'Other.' }
+          ]
+        })
+      )
+    ).toThrow(
+      'Mission plan task producer requiredPublishesTo must be a subset of publishesTo: /decision'
+    )
   })
 
   it('rejects a subscribed topic with no publisher in the mission', () => {
@@ -154,6 +182,7 @@ describe('Mission planning contract', () => {
     expect(prompt).toContain('worker_done')
     expect(prompt).toContain('publishesTo')
     expect(prompt).toContain('subscribesTo')
+    expect(prompt).toContain('requiredPublishesTo')
     expect(prompt).toContain('acceptedTypes')
     expect(prompt).toContain('Analyze both layers in parallel and integrate them.')
   })

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { noteCollaborationPublication } from '../../collaboration-runtime/collaboration-publication-obligations'
 import { getCollaborationRuntimeSession } from '../../collaboration-runtime/collaboration-runtime-registry'
 import type { CollaborationPreparedContextEntry } from '../../collaboration/collaboration-checkpoint-delivery'
 import {
@@ -71,6 +72,7 @@ export const COLLABORATION_METHODS: RpcMethod[] = [
           },
           deliveryIdFor: () => `collab_delivery_${randomUUID()}`
         })
+        noteCollaborationPublication(runtime, dispatch.run_id, params.taskId, params.topic)
         return { messageId: params.publicationId, ...result }
       } catch (error) {
         if (error instanceof CollaborationPublicationConflictError) {

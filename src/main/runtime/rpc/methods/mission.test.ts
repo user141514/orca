@@ -308,7 +308,8 @@ describe('mission.start', () => {
             key: 'mission',
             spec: 'Inspect Mission entry',
             deps: [],
-            publishesTo: ['/mission/findings']
+            publishesTo: ['/mission/findings'],
+            requiredPublishesTo: ['/mission/findings']
           },
           {
             key: 'control',
@@ -352,7 +353,8 @@ describe('mission.start', () => {
             instruction: 'Inspect Mission entry',
             dependsOn: [],
             contextFrom: [],
-            publishesTo: ['/mission/findings']
+            publishesTo: ['/mission/findings'],
+            requiredPublishesTo: ['/mission/findings']
           },
           {
             key: 'control',

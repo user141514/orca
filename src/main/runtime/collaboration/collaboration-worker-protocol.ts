@@ -5,6 +5,7 @@ export type CollaborationWorkerProtocolInput = {
   dispatchId: string
   dispatchCapability?: string
   publishesTo: readonly string[]
+  requiredPublishesTo?: readonly string[]
   subscribesTo: readonly string[]
 }
 
@@ -20,13 +21,21 @@ export function buildCollaborationWorkerProtocol(input: CollaborationWorkerProto
   const sections = ['=== COLLABORATION PROTOCOL ===']
 
   if (input.publishesTo.length > 0) {
+    const requiredTopics = input.requiredPublishesTo ?? []
     sections.push(
       [
         `Allowed publish topics: ${input.publishesTo.join(', ')}`,
+        ...(requiredTopics.length > 0
+          ? [`REQUIRED publish topics before successful worker_done: ${requiredTopics.join(', ')}`]
+          : []),
         'Publish useful intermediate findings while you work. Never name or choose subscribers.',
         `${input.cli} collaboration publish ${authority} \\\n    --publication-id "<stable-id-for-this-logical-publication>" \\\n    --topic "<one allowed topic>" --type finding --priority normal \\\n    --body "<concise finding>"`,
-        'Every required collaboration publish must succeed before worker_done. Confirm the publish command returns Published or Replayed before completing; worker_done settles the Dispatch, so later collaboration publishes are rejected.',
-        'If a required collaboration publish fails, do not send worker_done with outcome succeeded. Retry while the Dispatch is active using the SAME publication-id for identical topic/type/priority/body, or report the task as failed/blocked.',
+        ...(requiredTopics.length > 0
+          ? [
+              'Every REQUIRED topic above must have a successful publish before worker_done. Confirm each required publish command returns Published or Replayed before completing; worker_done settles the Dispatch, so later collaboration publishes are rejected.',
+              'If a required collaboration publish fails, do not send worker_done with outcome succeeded. Retry while the Dispatch is active using the SAME publication-id for identical topic/type/priority/body, or report the task as failed/blocked.'
+            ]
+          : []),
         'RETRY RULE: reuse the SAME publication-id with identical topic/type/priority/body after a timeout or lost response. Use a new publication-id for changed content.'
       ].join('\n')
     )

@@ -122,6 +122,7 @@ export const MISSION_METHODS: RpcMethod[] = [
             dependsOn: task.deps,
             contextFrom: task.deps,
             ...(task.publishesTo ? { publishesTo: task.publishesTo } : {}),
+            ...(task.requiredPublishesTo ? { requiredPublishesTo: task.requiredPublishesTo } : {}),
             ...(task.subscribesTo ? { subscribesTo: task.subscribesTo } : {}),
             ...(task.admission ? { admission: task.admission } : {})
           }))

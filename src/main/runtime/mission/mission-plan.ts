@@ -12,6 +12,7 @@ const MissionPlanTaskSchema = z.object({
   spec: z.string().trim().min(1).max(32_768),
   deps: z.array(z.string().trim().min(1).max(128)).max(32).optional().default([]),
   publishesTo: z.array(MissionTopicSchema).min(1).max(32).optional(),
+  requiredPublishesTo: z.array(MissionTopicSchema).min(1).max(32).optional(),
   subscribesTo: z.array(MissionTopicSchema).min(1).max(32).optional(),
   admission: MissionAdmissionSchema.optional()
 })
@@ -46,11 +47,12 @@ export function buildMissionPlanningPrompt(mission: string): string {
     'Do not choose execution backends, agents, worktrees, terminals, Dispatch IDs, capabilities, retries, or scheduling mechanics. Orca owns execution authority.',
     'Task specs must be self-contained instructions for the worker that will execute them.',
     'When concurrently running tasks need to exchange intermediate information, declare semantic Topic strings with publishesTo/subscribesTo. Topics are communication channels, not task keys and not recipient identities.',
+    'publishesTo is the allowlist of topics a worker may publish. If successful completion requires publishing on specific topics, also list those topics in requiredPublishesTo; requiredPublishesTo must be a subset of publishesTo.',
     'A task with subscribesTo must include admission with explicit acceptedTypes; minPriority defaults to normal. Do not declare collaboration fields when tasks are independent or ordinary deps/context handoff is sufficient.',
     'Never make a task instruction forbid Orca control-plane actions. worker_done, heartbeat, and ask are protocol actions and remain allowed and required even when the user says to only reply with specific content or do nothing else.',
     '',
     'Orchestration JSON shape:',
-    '{"mode":"orchestration","objective":"...","maxConcurrency":2,"tasks":[{"key":"a","spec":"Investigate and publish useful findings.","deps":[],"publishesTo":["/analysis/findings"]},{"key":"b","spec":"Work independently and consume relevant findings at stage checkpoints.","deps":[],"subscribesTo":["/analysis/findings"],"admission":{"acceptedTypes":["finding"],"minPriority":"normal"}}]}',
+    '{"mode":"orchestration","objective":"...","maxConcurrency":2,"tasks":[{"key":"a","spec":"Investigate and publish required findings.","deps":[],"publishesTo":["/analysis/findings"],"requiredPublishesTo":["/analysis/findings"]},{"key":"b","spec":"Work independently and consume relevant findings at stage checkpoints.","deps":[],"subscribesTo":["/analysis/findings"],"admission":{"acceptedTypes":["finding"],"minPriority":"normal"}}]}',
     '',
     'Mission:',
     mission
@@ -87,6 +89,14 @@ export function parseMissionPlan(raw: string): MissionPlan {
     for (const dependency of task.deps) {
       if (!keys.has(dependency)) {
         throw new Error(`Unknown Mission plan dependency: ${dependency}`)
+      }
+    }
+    const allowedPublishTopics = new Set(task.publishesTo ?? [])
+    for (const topic of task.requiredPublishesTo ?? []) {
+      if (!allowedPublishTopics.has(topic)) {
+        throw new Error(
+          `Mission plan task ${task.key} requiredPublishesTo must be a subset of publishesTo: ${topic}`
+        )
       }
     }
     if ((task.subscribesTo?.length ?? 0) > 0 && !task.admission) {

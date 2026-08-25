@@ -14,11 +14,13 @@ describe('buildCollaborationWorkerProtocol', () => {
     const result = buildCollaborationWorkerProtocol({
       ...authority,
       publishesTo: ['/findings'],
+      requiredPublishesTo: ['/findings'],
       subscribesTo: []
     })
 
     expect(result).toContain('=== COLLABORATION PROTOCOL ===')
     expect(result).toContain('Allowed publish topics: /findings')
+    expect(result).toContain('REQUIRED publish topics before successful worker_done: /findings')
     expect(result).toContain('orca-dev collaboration publish')
     expect(result).toContain('--from term_worker --dispatch-capability dcap_secret')
     expect(result).toContain('--task-id task_1 --dispatch-id ctx_1')
@@ -26,8 +28,10 @@ describe('buildCollaborationWorkerProtocol', () => {
     expect(result).toContain(
       'reuse the SAME publication-id with identical topic/type/priority/body'
     )
-    expect(result).toContain('Every required collaboration publish must succeed before worker_done')
-    expect(result).toContain('Confirm the publish command returns Published or Replayed')
+    expect(result).toContain(
+      'Every REQUIRED topic above must have a successful publish before worker_done'
+    )
+    expect(result).toContain('Confirm each required publish command returns Published or Replayed')
     expect(result).toContain(
       'If a required collaboration publish fails, do not send worker_done with outcome succeeded'
     )

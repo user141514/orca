@@ -32,6 +32,7 @@ import { ORCHESTRATION_RUN_METHODS } from './orchestration-runs'
 import { ORCHESTRATION_PLAN_METHODS } from './orchestration-plans'
 import { ORCHESTRATION_WORKER_METHODS } from './orchestration-worker-methods'
 import { ORCHESTRATION_FEDERATION_METHODS } from './orchestration-federation-methods'
+import { getCollaborationWorkerCompletionBlock } from '../../collaboration-runtime/collaboration-worker-completion-guard'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { RunRow } from '../../orchestration/types'
@@ -778,6 +779,37 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
                 action: 'rejected',
                 code,
                 reason: authority.reason
+              }
+            })
+          }
+        }
+        const collaborationRunId = dispatch?.run_id ?? undefined
+        const collaborationTaskId = dispatch?.task_id ?? undefined
+        if (
+          msg.type === 'worker_done' &&
+          collaborationRunId &&
+          collaborationTaskId &&
+          parseRemoteWorkerPayload(msg.payload ?? undefined).outcome === 'succeeded'
+        ) {
+          const completionBlock = getCollaborationWorkerCompletionBlock(
+            runtime,
+            collaborationRunId,
+            collaborationTaskId
+          )
+          if (completionBlock) {
+            const rejection =
+              db.convertLifecycleMessageToRejection(
+                msg.id,
+                completionBlock.code,
+                completionBlock.reason
+              ) ?? msg
+            runtime.notifyMessageArrived(rejection.to_handle, rejection.type)
+            return withSendWarnings({
+              message: rejection,
+              lifecycle: {
+                action: 'rejected' as const,
+                code: completionBlock.code,
+                reason: completionBlock.reason
               }
             })
           }

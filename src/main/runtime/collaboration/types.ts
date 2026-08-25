@@ -9,6 +9,7 @@ export type CollaborationStep = {
   dependsOn?: string[]
   contextFrom?: string[]
   publishesTo?: string[]
+  requiredPublishesTo?: string[]
   subscribesTo?: string[]
   admission?: CollaborationStepAdmission
 }

@@ -6,6 +6,10 @@ import type { CollaborationExecutionPort } from '../collaboration/collaboration-
 import { CollaborationRuntimeSession } from '../collaboration/collaboration-runtime-session'
 import type { CollaborationPlan, CollaborationRunReceipt } from '../collaboration/types'
 import {
+  registerCollaborationPublicationObligations,
+  unregisterCollaborationPublicationObligations
+} from '../collaboration-runtime/collaboration-publication-obligations'
+import {
   registerCollaborationRuntimeSession,
   unregisterCollaborationRuntimeSession
 } from '../collaboration-runtime/collaboration-runtime-registry'
@@ -77,6 +81,12 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
         admissionByStepKey
       })
     )
+    registerCollaborationPublicationObligations(
+      this.runtime,
+      materialized.run.id,
+      plan,
+      taskIdsByStepKey
+    )
     const resolveTaskInput = buildTaskInputResolver(plan, materialized.tasksByKey)
     const buildTaskProtocolInstructions = buildTaskProtocolInstructionBuilder(
       plan,
@@ -94,10 +104,12 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
       .then((result) => {
         if (result.state === 'completed') {
           unregisterCollaborationRuntimeSession(this.runtime, materialized.run.id)
+          unregisterCollaborationPublicationObligations(this.runtime, materialized.run.id)
         }
       })
       .catch((error: unknown) => {
         unregisterCollaborationRuntimeSession(this.runtime, materialized.run.id)
+        unregisterCollaborationPublicationObligations(this.runtime, materialized.run.id)
         console.error(`[mission] Run ${materialized.run.id} coordinator failed:`, error)
       })
     return { runId: materialized.run.id }
@@ -110,7 +122,11 @@ function buildTaskProtocolInstructionBuilder(
 ): LocalWorkerTaskProtocolInstructionBuilder {
   const collaborationByTaskId = new Map<
     string,
-    { publishesTo: readonly string[]; subscribesTo: readonly string[] }
+    {
+      publishesTo: readonly string[]
+      requiredPublishesTo: readonly string[]
+      subscribesTo: readonly string[]
+    }
   >()
   for (const step of plan.steps) {
     const task = tasksByKey[step.key]
@@ -119,6 +135,7 @@ function buildTaskProtocolInstructionBuilder(
     }
     collaborationByTaskId.set(task.id, {
       publishesTo: step.publishesTo ?? [],
+      requiredPublishesTo: step.requiredPublishesTo ?? [],
       subscribesTo: step.subscribesTo ?? []
     })
   }
