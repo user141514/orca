@@ -47,6 +47,10 @@ describe('buildDispatchPreamble', () => {
     expect(result).toContain('--dispatch-id ctx_def456')
     expect(result).toContain('--outcome succeeded')
     expect(result).toContain('replace it with --outcome failed')
+    expect(result).toContain('worker_done is the FINAL Dispatch-scoped protocol action')
+    expect(result).toContain(
+      'Complete every other task-required protocol action before worker_done'
+    )
     expect(result).toContain('--files-modified "path/a,path/b"')
     expect(result).toContain('--report-path "<optional: path to the full artifact>"')
     expect(result).toMatch(/orchestration send --from term_worker/)

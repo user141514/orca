@@ -26,6 +26,11 @@ describe('buildCollaborationWorkerProtocol', () => {
     expect(result).toContain(
       'reuse the SAME publication-id with identical topic/type/priority/body'
     )
+    expect(result).toContain('Every required collaboration publish must succeed before worker_done')
+    expect(result).toContain('Confirm the publish command returns Published or Replayed')
+    expect(result).toContain(
+      'If a required collaboration publish fails, do not send worker_done with outcome succeeded'
+    )
     expect(result).not.toContain('collaboration checkpoint --from')
   })
 

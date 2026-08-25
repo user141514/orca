@@ -25,6 +25,8 @@ export function buildCollaborationWorkerProtocol(input: CollaborationWorkerProto
         `Allowed publish topics: ${input.publishesTo.join(', ')}`,
         'Publish useful intermediate findings while you work. Never name or choose subscribers.',
         `${input.cli} collaboration publish ${authority} \\\n    --publication-id "<stable-id-for-this-logical-publication>" \\\n    --topic "<one allowed topic>" --type finding --priority normal \\\n    --body "<concise finding>"`,
+        'Every required collaboration publish must succeed before worker_done. Confirm the publish command returns Published or Replayed before completing; worker_done settles the Dispatch, so later collaboration publishes are rejected.',
+        'If a required collaboration publish fails, do not send worker_done with outcome succeeded. Retry while the Dispatch is active using the SAME publication-id for identical topic/type/priority/body, or report the task as failed/blocked.',
         'RETRY RULE: reuse the SAME publication-id with identical topic/type/priority/body after a timeout or lost response. Use a new publication-id for changed content.'
       ].join('\n')
     )

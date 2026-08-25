@@ -74,8 +74,10 @@ Slack, GitHub comments, or any other channel to reach a human during the run.
   # If you produced a long-form artifact, include its path as
   # payload.reportPath so the coordinator can find it without a file search.
   #
-  # RULE: send worker_done exactly once. Use --outcome succeeded when the
-  # requested work is done, or replace it with --outcome failed when it is not.
+  # RULE: send worker_done exactly once. worker_done is the FINAL Dispatch-scoped protocol action.
+  # Complete every other task-required protocol action before worker_done; once worker_done is accepted,
+  # this Dispatch is settled and later Dispatch-scoped actions may be rejected.
+  # Use --outcome succeeded when the requested work is done, or replace it with --outcome failed when it is not.
   # Never encode failure only in prose and never silently exit.
   # Include BOTH taskId and dispatchId in the payload so a late completion
   # from a failed retry cannot complete the current dispatch.
