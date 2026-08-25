@@ -18,15 +18,7 @@ import {
 } from '../../shared/protocol-version'
 import { RemoteRuntimeCompatGate } from './remote-runtime-compat-gate'
 import { createOrchestrationCompatibilityEnvelope } from './orchestration-compatibility-envelope'
-import { getTimeoutMsParam, isWaitingCheck } from './runtime-request-timeout'
-
-// Why: for long-poll methods the caller's method-level
-// `params.timeoutMs` is the inner waiter budget; we extend the client-side
-// socket timeout to `timeoutMs + GRACE_MS` so the client's own idle timer
-// never fires before the server-side waiter has had a chance to resolve and
-// emit its terminal frame. The 10 s grace absorbs round-trip + one final
-// keepalive window. See design doc §3.1.
-const LONG_POLL_CLIENT_GRACE_MS = 10_000
+import { resolveMethodTimeoutMs } from './runtime-request-timeout'
 
 // Why: ws + tweetnacl + the remote-runtime frame stack only matter once a
 // request actually goes over a pairing offer, which local CLI calls never do.
@@ -71,7 +63,8 @@ export class RuntimeClient {
     params?: unknown,
     options?: { timeoutMs?: number } & RuntimeOrchestrationEnvelope
   ): Promise<RuntimeRpcSuccess<TResult>> {
-    const effectiveTimeoutMs = options?.timeoutMs ?? this.resolveMethodTimeoutMs(method, params)
+    const effectiveTimeoutMs =
+      options?.timeoutMs ?? resolveMethodTimeoutMs(method, params, this.requestTimeoutMs)
     const orchestrationMutation = isOrchestrationMutation(method, params)
     if (orchestrationMutation) {
       await this.ensureOrchestrationContractCompatible(effectiveTimeoutMs)
@@ -130,24 +123,6 @@ export class RuntimeClient {
       throw new RuntimeRpcFailureError(response)
     }
     return response
-  }
-
-  // Why: centralises the per-method timeout policy. Long-poll inner waiter
-  // budgets live in `params.timeoutMs`; widen the client-side socket timeout
-  // to `timeoutMs + grace` so it doesn't fire before the server has a chance
-  // to resolve. Without this, a 5 min wait would still die at the 60 s default.
-  // See design doc §3.1.
-  private resolveMethodTimeoutMs(method: string, params?: unknown): number {
-    if (
-      (method === 'orchestration.check' && isWaitingCheck(params)) ||
-      method === 'terminal.wait'
-    ) {
-      const inner = Number(getTimeoutMsParam(params))
-      if (Number.isFinite(inner) && inner > 0) {
-        return Math.max(inner + LONG_POLL_CLIENT_GRACE_MS, this.requestTimeoutMs)
-      }
-    }
-    return this.requestTimeoutMs
   }
 
   async getCliStatus(): Promise<RuntimeRpcSuccess<CliStatusResult>> {
