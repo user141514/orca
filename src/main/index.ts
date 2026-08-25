@@ -71,6 +71,7 @@ import { initCohortClassifier } from './telemetry/cohort-classifier'
 import { initOnboardingCohortClassifier } from './telemetry/onboarding-cohort-classifier'
 import { resolveConsent } from './telemetry/consent'
 import { triggerStartupNotificationRegistration } from './ipc/startup-notification-registration'
+import { CollaborationToolCheckpointService } from './runtime/collaboration-runtime/collaboration-tool-checkpoint-service'
 import { OrcaRuntimeService, type RuntimeWorktreeLifecycleEvent } from './runtime/orca-runtime'
 import { ArtifactCloudService } from './artifacts/artifact-cloud-service'
 import { SkillCloudService } from './skills/skill-cloud-service'
@@ -2668,6 +2669,18 @@ void app.whenReady().then(async () => {
     skillTransactionRecovery
   })
   runtime = runtimeService
+  const collaborationToolCheckpointService = new CollaborationToolCheckpointService(runtimeService)
+  agentHookServer.setCollaborationToolCheckpointHandler({
+    prepare: ({ paneKey, launchToken }) =>
+      collaborationToolCheckpointService.prepare({ paneKey, launchToken, nowMs: Date.now() }),
+    acknowledge: ({ paneKey, launchToken, acknowledgements }) =>
+      collaborationToolCheckpointService.acknowledge({
+        paneKey,
+        launchToken,
+        nowMs: Date.now(),
+        acknowledgements
+      })
+  })
   runtimeService.prepareLegacyWorkerTerminalRecovery()
   publishProviderSessionChanges(agentHookServer.getProviderSessionIdentities())
   browserManager.setBrowserGuestStateChangedListener((worktreeId) => {

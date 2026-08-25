@@ -690,6 +690,72 @@ function attachClaudePermissionToolUseId(
   }
 }
 
+export const COLLABORATION_TOOL_CHECKPOINT_PREPARE_PATH = '/collaboration/tool-checkpoint/prepare'
+export const COLLABORATION_TOOL_CHECKPOINT_ACK_PATH = '/collaboration/tool-checkpoint/ack'
+
+type CollaborationToolCheckpointHandler = {
+  prepare(input: { paneKey: string; launchToken: string }): unknown
+  acknowledge(input: {
+    paneKey: string
+    launchToken: string
+    acknowledgements: readonly { deliveryId: string; deliveryAttempt: number }[]
+  }): unknown
+}
+
+type CollaborationToolCheckpointIdentity = { paneKey: string; launchToken: string }
+
+function readCollaborationToolCheckpointIdentity(
+  body: unknown
+): CollaborationToolCheckpointIdentity | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return null
+  }
+  const record = body as Record<string, unknown>
+  return typeof record.paneKey === 'string' &&
+    record.paneKey.length > 0 &&
+    typeof record.launchToken === 'string' &&
+    record.launchToken.length > 0
+    ? { paneKey: record.paneKey, launchToken: record.launchToken }
+    : null
+}
+
+function readCollaborationToolCheckpointAcknowledgements(
+  body: unknown
+): readonly { deliveryId: string; deliveryAttempt: number }[] | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return null
+  }
+  const acknowledgements = (body as Record<string, unknown>).acknowledgements
+  if (!Array.isArray(acknowledgements) || acknowledgements.length > 50) {
+    return null
+  }
+  const parsed: { deliveryId: string; deliveryAttempt: number }[] = []
+  for (const acknowledgement of acknowledgements) {
+    if (!acknowledgement || typeof acknowledgement !== 'object' || Array.isArray(acknowledgement)) {
+      return null
+    }
+    const record = acknowledgement as Record<string, unknown>
+    if (
+      typeof record.deliveryId !== 'string' ||
+      record.deliveryId.length === 0 ||
+      !Number.isInteger(record.deliveryAttempt) ||
+      (record.deliveryAttempt as number) < 1
+    ) {
+      return null
+    }
+    parsed.push({
+      deliveryId: record.deliveryId,
+      deliveryAttempt: record.deliveryAttempt as number
+    })
+  }
+  return parsed
+}
+
+function writeHookJson(res: ServerResponse, statusCode: number, value: unknown): void {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(value))
+}
+
 export class AgentHookServer {
   private server: ReturnType<typeof createServer> | null = null
   private port = 0
@@ -699,6 +765,7 @@ export class AgentHookServer {
   private onAgentStatus: ((payload: EnrichedAgentHookEventPayload) => void) | null = null
   private onClaudeStatusLine: ((event: ClaudeStatusLineRateLimits) => void) | null = null
   private onPaneStatusCleared: PaneStatusClearListener | null = null
+  private collaborationToolCheckpointHandler: CollaborationToolCheckpointHandler | null = null
   private paneStatusClearListeners = new Set<PaneStatusClearListener>()
   private statusChangeListeners = new Set<StatusChangeListener>()
   private providerSessionChangeListeners = new Set<ProviderSessionChangeListener>()
@@ -759,6 +826,10 @@ export class AgentHookServer {
     listener: ((report: HookTransportInterferenceReport) => void) | null
   ): void {
     this.onTransportInterference = listener
+  }
+
+  setCollaborationToolCheckpointHandler(handler: CollaborationToolCheckpointHandler | null): void {
+    this.collaborationToolCheckpointHandler = handler
   }
 
   setListener(listener: ((payload: EnrichedAgentHookEventPayload) => void) | null): void {
@@ -2444,8 +2515,43 @@ export class AgentHookServer {
       })
 
       const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+      const collaborationToolCheckpointRequest =
+        pathname === COLLABORATION_TOOL_CHECKPOINT_PREPARE_PATH ||
+        pathname === COLLABORATION_TOOL_CHECKPOINT_ACK_PATH
       try {
         const body = await readRequestBody(req)
+        if (collaborationToolCheckpointRequest) {
+          const identity = readCollaborationToolCheckpointIdentity(body)
+          if (!identity) {
+            writeHookJson(res, 400, { error: 'invalid_collaboration_tool_checkpoint_request' })
+            return
+          }
+          const handler = this.collaborationToolCheckpointHandler
+          if (!handler) {
+            writeHookJson(res, 503, { error: 'collaboration_tool_checkpoint_unavailable' })
+            return
+          }
+          try {
+            const result =
+              pathname === COLLABORATION_TOOL_CHECKPOINT_PREPARE_PATH
+                ? await handler.prepare(identity)
+                : await (async () => {
+                    const acknowledgements = readCollaborationToolCheckpointAcknowledgements(body)
+                    if (!acknowledgements) {
+                      return undefined
+                    }
+                    return await handler.acknowledge({ ...identity, acknowledgements })
+                  })()
+            if (result === undefined) {
+              writeHookJson(res, 400, { error: 'invalid_collaboration_tool_checkpoint_request' })
+              return
+            }
+            writeHookJson(res, 200, result)
+          } catch {
+            writeHookJson(res, 503, { error: 'collaboration_tool_checkpoint_failed' })
+          }
+          return
+        }
         if (pathname === CLAUDE_STATUSLINE_PATHNAME) {
           const statusLineEvent = parseClaudeStatusLineBody(body)
           if (statusLineEvent) {
@@ -2490,6 +2596,10 @@ export class AgentHookServer {
         res.writeHead(204)
         res.end()
       } catch (error) {
+        if (collaborationToolCheckpointRequest) {
+          writeHookJson(res, 400, { error: 'invalid_collaboration_tool_checkpoint_request' })
+          return
+        }
         // Why (#11217): an authenticated POST whose body dies short of its own Content-Length was cut
         // by something on the loopback path, not by a bad payload. Fail open as before, but count it —
         // this is the one failure mode that silently stops status for every runtime at once.
