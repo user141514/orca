@@ -1,3 +1,4 @@
+import { OrchestrationError } from '../../orchestration-error'
 import type { OrchestrationDb } from '../orchestration-db'
 import type { RunCoordinationLease } from './run-consumer'
 
@@ -10,6 +11,12 @@ export function setRunControlPolicy(
   lease: RunCoordinationLease,
   policy: RunControlPolicy
 ): RunControlPolicy {
+  if (!Number.isInteger(policy.maxConcurrency) || policy.maxConcurrency < 1) {
+    throw new OrchestrationError(
+      'invalid_argument',
+      'Run maxConcurrency must be a positive integer.'
+    )
+  }
   this.db.exec('BEGIN IMMEDIATE')
   try {
     this.requireRunConsumer(lease)
