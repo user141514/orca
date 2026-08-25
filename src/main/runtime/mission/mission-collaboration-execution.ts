@@ -29,6 +29,7 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
 
   async start(plan: CollaborationPlan): Promise<CollaborationRunReceipt> {
     const db = this.runtime.getOrchestrationDb()
+    const devMode = process.env.ORCA_USER_DATA_PATH?.includes('orca-dev') === true
     const consumerId = `mission:${randomUUID()}`
     const control = new OrchestrationControlPlane(db, consumerId)
     const materialized = control.startPlan({
@@ -43,7 +44,8 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
           config: {
             worktreeId: this.worktreeId,
             agent: this.agent,
-            timeoutMs: this.timeoutMs
+            timeoutMs: this.timeoutMs,
+            ...(devMode ? { devMode: true } : {})
           }
         }
       }))

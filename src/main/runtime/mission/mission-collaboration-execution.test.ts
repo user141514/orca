@@ -10,6 +10,7 @@ let db: OrchestrationDb | undefined
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   db?.close()
   db = undefined
 })
@@ -205,6 +206,7 @@ describe('MissionCollaborationExecution', () => {
       return { handle, accepted: true, bytesWritten: prompt.length }
     })
 
+    vi.stubEnv('ORCA_USER_DATA_PATH', '/home/ad/.config/orca-dev')
     const execution = new MissionCollaborationExecution(runtime, 'repo::worktree', 'codex')
     const receipt = await execution.start({
       objective: 'source then consumer',
@@ -229,12 +231,12 @@ describe('MissionCollaborationExecution', () => {
     await vi.waitFor(() => expect(prompts).toHaveLength(2), { timeout: 1_000 })
     expect(prompts[0]).not.toContain('=== PREDECESSOR RESULTS ===')
     expect(prompts[0]).toContain('Allowed publish topics: /findings')
-    expect(prompts[0]).toContain('collaboration publish')
+    expect(prompts[0]).toContain('orca-dev collaboration publish')
     expect(prompts[0]).not.toContain('collaboration checkpoint --from')
     expect(prompts[1]).toContain('=== PREDECESSOR RESULTS ===')
     expect(prompts[1]).toContain('Subscribed topics: /findings')
-    expect(prompts[1]).toContain('collaboration checkpoint --from')
-    expect(prompts[1]).toContain('collaboration checkpoint-ack --from')
+    expect(prompts[1]).toContain('orca-dev collaboration checkpoint --from')
+    expect(prompts[1]).toContain('orca-dev collaboration checkpoint-ack --from')
     expect(prompts[1]).not.toContain('collaboration publish --from')
     expect(prompts[1]).toContain('[source]\nsource conclusion')
     expect(prompts[1]).toContain('=== CURRENT STEP ===\nconsume source result')
