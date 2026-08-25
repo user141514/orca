@@ -196,6 +196,11 @@ export class CollaborationRuntimeSession {
     })
   }
 
+  hasCheckpointSubscription(taskId: string): boolean {
+    const stepKey = this.stepKeyByTaskId.get(taskId)
+    return stepKey !== undefined && this.admissionByStepKey.has(stepKey)
+  }
+
   prepareCheckpoint(options: {
     taskId: string
     nowMs: number

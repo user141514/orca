@@ -10,6 +10,10 @@ import { getCohortAtEmit } from '../telemetry/cohort-classifier'
 import { AGENT_KIND_VALUES, type AgentKind } from '../../shared/telemetry-events'
 import { ORCA_HOOK_PROTOCOL_VERSION } from '../../shared/agent-hook-types'
 import {
+  COLLABORATION_TOOL_CHECKPOINT_ACK_PATH,
+  COLLABORATION_TOOL_CHECKPOINT_PREPARE_PATH
+} from '../../shared/collaboration-tool-checkpoint-contract'
+import {
   clearAllListenerCaches,
   clearPaneCacheState,
   clearClaudeAnsweredQuestionWait,
@@ -689,9 +693,6 @@ function attachClaudePermissionToolUseId(
     toolUseId: inheritedToolUseId
   }
 }
-
-export const COLLABORATION_TOOL_CHECKPOINT_PREPARE_PATH = '/collaboration/tool-checkpoint/prepare'
-export const COLLABORATION_TOOL_CHECKPOINT_ACK_PATH = '/collaboration/tool-checkpoint/ack'
 
 type CollaborationToolCheckpointHandler = {
   prepare(input: { paneKey: string; launchToken: string }): unknown

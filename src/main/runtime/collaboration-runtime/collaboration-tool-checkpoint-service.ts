@@ -85,6 +85,8 @@ export class CollaborationToolCheckpointService {
       return undefined
     }
     const session = getCollaborationRuntimeSession(this.runtime, dispatch.run_id)
-    return session ? { session, taskId: dispatch.task_id } : undefined
+    return session?.hasCheckpointSubscription(dispatch.task_id)
+      ? { session, taskId: dispatch.task_id }
+      : undefined
   }
 }

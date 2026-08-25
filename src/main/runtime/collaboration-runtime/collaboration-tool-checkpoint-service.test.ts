@@ -154,6 +154,53 @@ describe('CollaborationToolCheckpointService', () => {
     expect(session.getDelivery('delivery-1')?.state).toBe('acked')
   })
 
+  it('returns inactive for collaboration tasks that do not subscribe to context', () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    const run = db.createRun({ objective: 'producer only' })
+    const task = db.createTask({ runId: run.id, spec: 'Publish findings.' })
+    const paneKey = 'tab_producer:leaf_producer'
+    const launchToken = 'producer-launch'
+    const launchTokenHash = createHash('sha256').update(launchToken).digest('hex')
+    db.createDispatchContext(
+      task.id,
+      'term_producer',
+      paneKey,
+      launchTokenHash,
+      'runtime_test:term_producer:1'
+    )
+    vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockReturnValue({
+      runtimeId: 'runtime_test',
+      terminalHandle: 'term_producer',
+      ptyId: 'pty_producer',
+      worktreeId: 'repo::worktree',
+      paneKey,
+      processIncarnation: 'runtime_test:term_producer:1',
+      launchTokenHash,
+      hostScope: { kind: 'local', hostId: 'local' }
+    })
+    registerCollaborationRuntimeSession(
+      runtime,
+      run.id,
+      new CollaborationRuntimeSession({
+        plan: {
+          objective: 'producer only',
+          maxConcurrency: 1,
+          steps: [{ key: 'producer', instruction: 'Publish findings.', publishesTo: ['/findings'] }]
+        },
+        taskIdsByStepKey: { producer: task.id },
+        admissionByStepKey: {}
+      })
+    )
+    const service = new CollaborationToolCheckpointService(runtime)
+
+    expect(service.prepare({ paneKey, launchToken, nowMs: 1_000 })).toEqual({
+      active: false,
+      entries: []
+    })
+  })
+
   it('returns inactive when the active Dispatch has no collaboration session', () => {
     db = new OrchestrationDb(':memory:')
     const runtime = new OrcaRuntimeService()

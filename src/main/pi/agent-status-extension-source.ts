@@ -11,6 +11,7 @@
 // keep the source body in plain JS without TS types and avoid pulling pi or
 // any Orca dep into the pi runtime.
 import type { PiAgentKind } from '../../shared/pi-agent-kind'
+import { getPiCollaborationToolCheckpointModuleSourceLines } from './agent-status-collaboration-tool-checkpoint-source'
 import { getPiAgentStatusHandlerSourceLines } from './agent-status-handler-source'
 import { getPiAgentStatusRuntimeDetectionSourceLines } from './agent-status-runtime-detection-source'
 import { getPiAgentStatusWslCurlSourceLines } from './agent-status-wsl-curl-source'
@@ -160,6 +161,7 @@ export function getPiAgentStatusExtensionSource(kind: PiAgentKind = 'pi'): strin
     '',
     ...getPiAgentStatusRuntimeDetectionSourceLines(kind),
     '',
+    ...getPiCollaborationToolCheckpointModuleSourceLines(kind),
     'function post(hookEventName: string, extra: Record<string, unknown> = {}): void {',
     '  const ompRuntime = isOmpRuntime()',
     '  pendingPost = {',

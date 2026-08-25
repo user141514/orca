@@ -1,4 +1,5 @@
 import type { PiAgentKind } from '../../shared/pi-agent-kind'
+import { getPiCollaborationToolCheckpointHandlerSourceLines } from './agent-status-collaboration-tool-checkpoint-source'
 
 // Why: keep the generated handler registrations separate from hook transport;
 // both are independently sizeable and the installed extension concatenates them.
@@ -102,6 +103,7 @@ export function getPiAgentStatusHandlerSourceLines(kind: PiAgentKind): string[] 
     '    })',
     '  })',
     '',
+    ...getPiCollaborationToolCheckpointHandlerSourceLines(kind),
     "  // Why: capture the assistant's final text on each completed message",
     '  // so the dashboard preview reflects the most recent reply even before',
     '  // agent_end fires. message_end is the right hook because pi guarantees',
