@@ -38,6 +38,7 @@ import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { RunRow } from '../../orchestration/types'
 import { encodeFederatedControlMessage } from '../../orchestration/federation-control-message'
 import { bindCoordinatorMutationPayload } from '../../orchestration/dispatch-message-binding'
+import { getCollaborationWorkerCompletionBlock } from '../../collaboration/collaboration-worker-completion'
 import {
   ORCHESTRATION_FEDERATION_CONTROL_MAIL_PROTOCOL_VERSION,
   ORCHESTRATION_FEDERATION_LIFECYCLE_SETTLEMENT_PROTOCOL_VERSION
@@ -113,6 +114,35 @@ function parseMessageTaskId(payload: string | undefined): string | undefined {
         ? (parsed as { taskId: string }).taskId
         : undefined
       : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function parseWorkerDoneCompletionInput(
+  payload: string | undefined
+): { taskId: string; dispatchId: string; outcome: 'succeeded' | 'failed' } | undefined {
+  if (!payload) {
+    return undefined
+  }
+  try {
+    const parsed: unknown = JSON.parse(payload)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined
+    }
+    const report = parsed as Record<string, unknown>
+    if (
+      typeof report.taskId !== 'string' ||
+      typeof report.dispatchId !== 'string' ||
+      !isWorkerReportOutcome(report.outcome)
+    ) {
+      return undefined
+    }
+    return {
+      taskId: report.taskId,
+      dispatchId: report.dispatchId,
+      outcome: report.outcome
+    }
   } catch {
     return undefined
   }
@@ -780,6 +810,25 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
                 reason: authority.reason
               }
             })
+          }
+        }
+        if (msg.type === 'worker_done' && dispatch) {
+          const report = parseWorkerDoneCompletionInput(msg.payload ?? undefined)
+          if (report && report.taskId === dispatch.task_id && report.dispatchId === dispatch.id) {
+            const block = getCollaborationWorkerCompletionBlock(runtime, {
+              runId: dispatch.run_id,
+              taskId: dispatch.task_id,
+              outcome: report.outcome
+            })
+            if (block) {
+              const rejection =
+                db.convertLifecycleMessageToRejection(msg.id, block.code, block.reason) ?? msg
+              runtime.notifyMessageArrived(rejection.to_handle, rejection.type)
+              return withSendWarnings({
+                message: rejection,
+                lifecycle: { action: 'rejected', code: block.code, reason: block.reason }
+              })
+            }
           }
         }
         // Why: reconcile releases the dispatch lock before waking recipients, else a woken coordinator re-dispatches while the lock is still held.
