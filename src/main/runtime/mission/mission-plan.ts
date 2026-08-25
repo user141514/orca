@@ -1,9 +1,19 @@
 import { z } from 'zod'
 
+const MissionTopicSchema = z.string().trim().min(1).max(256)
+
+const MissionAdmissionSchema = z.object({
+  acceptedTypes: z.array(z.string().trim().min(1).max(128)).min(1).max(32),
+  minPriority: z.enum(['normal', 'high', 'urgent']).optional().default('normal')
+})
+
 const MissionPlanTaskSchema = z.object({
   key: z.string().trim().min(1).max(128),
   spec: z.string().trim().min(1).max(32_768),
-  deps: z.array(z.string().trim().min(1).max(128)).max(32).optional().default([])
+  deps: z.array(z.string().trim().min(1).max(128)).max(32).optional().default([]),
+  publishesTo: z.array(MissionTopicSchema).min(1).max(32).optional(),
+  subscribesTo: z.array(MissionTopicSchema).min(1).max(32).optional(),
+  admission: MissionAdmissionSchema.optional()
 })
 
 const SingleAgentMissionPlanSchema = z.object({
@@ -35,10 +45,12 @@ export function buildMissionPlanningPrompt(mission: string): string {
     'Do not invent extra tasks merely to increase agent count.',
     'Do not choose execution backends, agents, worktrees, terminals, Dispatch IDs, capabilities, retries, or scheduling mechanics. Orca owns execution authority.',
     'Task specs must be self-contained instructions for the worker that will execute them.',
+    'When concurrently running tasks need to exchange intermediate information, declare semantic Topic strings with publishesTo/subscribesTo. Topics are communication channels, not task keys and not recipient identities.',
+    'A task with subscribesTo must include admission with explicit acceptedTypes; minPriority defaults to normal. Do not declare collaboration fields when tasks are independent or ordinary deps/context handoff is sufficient.',
     'Never make a task instruction forbid Orca control-plane actions. worker_done, heartbeat, and ask are protocol actions and remain allowed and required even when the user says to only reply with specific content or do nothing else.',
     '',
     'Orchestration JSON shape:',
-    '{"mode":"orchestration","objective":"...","maxConcurrency":2,"tasks":[{"key":"a","spec":"...","deps":[]},{"key":"b","spec":"...","deps":[]},{"key":"c","spec":"...","deps":["a","b"]}]}',
+    '{"mode":"orchestration","objective":"...","maxConcurrency":2,"tasks":[{"key":"a","spec":"Investigate and publish useful findings.","deps":[],"publishesTo":["/analysis/findings"]},{"key":"b","spec":"Work independently and consume relevant findings at stage checkpoints.","deps":[],"subscribesTo":["/analysis/findings"],"admission":{"acceptedTypes":["finding"],"minPriority":"normal"}}]}',
     '',
     'Mission:',
     mission
@@ -64,6 +76,7 @@ export function parseMissionPlan(raw: string): MissionPlan {
   }
 
   const keys = new Set<string>()
+  const publishedTopics = new Set(parsed.data.tasks.flatMap((task) => task.publishesTo ?? []))
   for (const task of parsed.data.tasks) {
     if (keys.has(task.key)) {
       throw new Error(`Duplicate Mission plan task key: ${task.key}`)
@@ -74,6 +87,16 @@ export function parseMissionPlan(raw: string): MissionPlan {
     for (const dependency of task.deps) {
       if (!keys.has(dependency)) {
         throw new Error(`Unknown Mission plan dependency: ${dependency}`)
+      }
+    }
+    if ((task.subscribesTo?.length ?? 0) > 0 && !task.admission) {
+      throw new Error(`Mission plan task ${task.key} subscribesTo requires admission`)
+    }
+    for (const topic of task.subscribesTo ?? []) {
+      if (!publishedTopics.has(topic)) {
+        throw new Error(
+          `Mission plan task ${task.key} subscribesTo topic has no publisher: ${topic}`
+        )
       }
     }
   }

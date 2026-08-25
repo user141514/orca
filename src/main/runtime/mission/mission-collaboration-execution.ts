@@ -49,13 +49,28 @@ export class MissionCollaborationExecution implements CollaborationExecutionPort
     const taskIdsByStepKey = Object.fromEntries(
       Object.entries(materialized.tasksByKey).map(([stepKey, task]) => [stepKey, task.id])
     )
+    const admissionByStepKey = Object.fromEntries(
+      plan.steps.flatMap((step) =>
+        step.admission
+          ? [
+              [
+                step.key,
+                {
+                  acceptedTypes: [...step.admission.acceptedTypes],
+                  minPriority: step.admission.minPriority
+                }
+              ] as const
+            ]
+          : []
+      )
+    )
     registerCollaborationRuntimeSession(
       this.runtime,
       materialized.run.id,
       new CollaborationRuntimeSession({
         plan,
         taskIdsByStepKey,
-        admissionByStepKey: {}
+        admissionByStepKey
       })
     )
     const resolveTaskInput = buildTaskInputResolver(plan, materialized.tasksByKey)

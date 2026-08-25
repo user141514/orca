@@ -15,6 +15,16 @@ export type CollaborationDeliveryIdFactory = (input: {
   message: CollaborationMessage
 }) => string
 
+export class CollaborationPublishTopicError extends Error {
+  constructor(
+    readonly stepKey: string,
+    readonly topic: string
+  ) {
+    super(`Step ${stepKey} is not allowed to publish to topic: ${topic}`)
+    this.name = 'CollaborationPublishTopicError'
+  }
+}
+
 export class CollaborationPublicationConflictError extends Error {
   constructor(readonly publicationId: string) {
     super(`Collaboration publication id reused with different content: ${publicationId}`)
@@ -32,6 +42,7 @@ export class CollaborationRuntimeSession {
   private readonly routing
   private readonly stepKeyByTaskId = new Map<string, string>()
   private readonly admissionByStepKey = new Map<string, CollaborationAdmissionPolicy>()
+  private readonly publishesToByStepKey = new Map<string, ReadonlySet<string>>()
   private readonly publicationsByStepKey = new Map<
     string,
     Map<string, CollaborationPublicationReceipt>
@@ -45,6 +56,9 @@ export class CollaborationRuntimeSession {
     this.routing = buildCollaborationRoutingTable(options.plan)
     const planStepKeys = new Set(options.plan.steps.map((step) => step.key))
     for (const step of options.plan.steps) {
+      if ((step.publishesTo?.length ?? 0) > 0) {
+        this.publishesToByStepKey.set(step.key, new Set(step.publishesTo))
+      }
       const hasPolicy = Object.hasOwn(options.admissionByStepKey, step.key)
       const policy = hasPolicy ? options.admissionByStepKey[step.key] : undefined
       if ((step.subscribesTo?.length ?? 0) > 0 && !policy) {
@@ -73,6 +87,10 @@ export class CollaborationRuntimeSession {
     const stepKey = this.stepKeyByTaskId.get(options.taskId)
     if (!stepKey) {
       throw new Error(`Unknown collaboration task: ${options.taskId}`)
+    }
+    const publishedTopics = this.publishesToByStepKey.get(stepKey)
+    if (!publishedTopics?.has(options.message.topic)) {
+      throw new CollaborationPublishTopicError(stepKey, options.message.topic)
     }
     const message: CollaborationMessage = { ...options.message, producerKey: stepKey }
     const publications = this.publicationsByStepKey.get(stepKey) ?? new Map()

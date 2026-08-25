@@ -304,8 +304,19 @@ describe('mission.start', () => {
         objective: 'Inspect both layers and integrate them',
         maxConcurrency: 2,
         tasks: [
-          { key: 'mission', spec: 'Inspect Mission entry', deps: [] },
-          { key: 'control', spec: 'Inspect orchestration control plane', deps: [] },
+          {
+            key: 'mission',
+            spec: 'Inspect Mission entry',
+            deps: [],
+            publishesTo: ['/mission/findings']
+          },
+          {
+            key: 'control',
+            spec: 'Inspect orchestration control plane',
+            deps: [],
+            subscribesTo: ['/mission/findings'],
+            admission: { acceptedTypes: ['finding'], minPriority: 'high' }
+          },
           { key: 'integrate', spec: 'Integrate both findings', deps: ['mission', 'control'] }
         ]
       }),
@@ -340,13 +351,16 @@ describe('mission.start', () => {
             key: 'mission',
             instruction: 'Inspect Mission entry',
             dependsOn: [],
-            contextFrom: []
+            contextFrom: [],
+            publishesTo: ['/mission/findings']
           },
           {
             key: 'control',
             instruction: 'Inspect orchestration control plane',
             dependsOn: [],
-            contextFrom: []
+            contextFrom: [],
+            subscribesTo: ['/mission/findings'],
+            admission: { acceptedTypes: ['finding'], minPriority: 'high' }
           },
           {
             key: 'integrate',

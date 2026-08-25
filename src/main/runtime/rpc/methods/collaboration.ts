@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { getCollaborationRuntimeSession } from '../../collaboration-runtime/collaboration-runtime-registry'
-import { CollaborationPublicationConflictError } from '../../collaboration/collaboration-runtime-session'
+import {
+  CollaborationPublicationConflictError,
+  CollaborationPublishTopicError
+} from '../../collaboration/collaboration-runtime-session'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { DispatchContextRow } from '../../orchestration/types'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
@@ -66,6 +69,9 @@ export const COLLABORATION_METHODS: RpcMethod[] = [
       } catch (error) {
         if (error instanceof CollaborationPublicationConflictError) {
           throw new OrchestrationError('collaboration_publication_conflict', error.message)
+        }
+        if (error instanceof CollaborationPublishTopicError) {
+          throw new OrchestrationError('collaboration_topic_not_allowed', error.message)
         }
         throw error
       }

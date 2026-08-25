@@ -17,6 +17,7 @@ describe('mapRuntimeError', () => {
   it.each([
     'collaboration_session_unavailable',
     'collaboration_publication_conflict',
+    'collaboration_topic_not_allowed',
     'sender_not_assignee',
     'task_dispatch_mismatch'
   ])('preserves collaboration checkpoint failure %s across RPC', (code) => {

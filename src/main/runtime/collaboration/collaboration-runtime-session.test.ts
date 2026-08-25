@@ -8,7 +8,7 @@ const PLAN: CollaborationPlan = {
   objective: 'Share findings during one run',
   maxConcurrency: 2,
   steps: [
-    { key: 'producer', instruction: 'Investigate.' },
+    { key: 'producer', instruction: 'Investigate.', publishesTo: ['/findings'] },
     {
       key: 'consumer',
       instruction: 'Use findings.',
@@ -34,6 +34,33 @@ function finding(id: string, body: string): CollaborationMessage {
 }
 
 describe('CollaborationRuntimeSession', () => {
+  it('rejects a producer topic that is not declared by its collaboration step', () => {
+    const session = new CollaborationRuntimeSession({
+      plan: {
+        ...PLAN,
+        steps: PLAN.steps.map((step) =>
+          step.key === 'producer' ? { key: step.key, instruction: step.instruction } : step
+        )
+      },
+      taskIdsByStepKey: { producer: 'task-producer', consumer: 'task-consumer' },
+      admissionByStepKey: { consumer: POLICY }
+    })
+
+    expect(() =>
+      session.publishFromTask({
+        taskId: 'task-producer',
+        message: {
+          id: 'message-not-allowed',
+          topic: '/findings',
+          type: 'finding',
+          priority: 'normal',
+          body: 'not declared'
+        },
+        deliveryIdFor: () => 'delivery-not-allowed'
+      })
+    ).toThrow('Step producer is not allowed to publish to topic: /findings')
+  })
+
   it('derives the producer step from the authenticated task when publishing', () => {
     const session = new CollaborationRuntimeSession({
       plan: PLAN,
@@ -126,7 +153,7 @@ describe('CollaborationRuntimeSession', () => {
       plan: {
         objective: 'No subscribers',
         maxConcurrency: 1,
-        steps: [{ key: 'producer', instruction: 'Publish.' }]
+        steps: [{ key: 'producer', instruction: 'Publish.', publishesTo: ['/nobody'] }]
       },
       taskIdsByStepKey: { producer: 'task-producer' },
       admissionByStepKey: {}

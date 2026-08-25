@@ -129,7 +129,7 @@ function setupAuthorizedPublish() {
       objective: 'publish run',
       maxConcurrency: 2,
       steps: [
-        { key: 'producer', instruction: 'Publish findings.' },
+        { key: 'producer', instruction: 'Publish findings.', publishesTo: ['/findings'] },
         {
           key: 'consumer',
           instruction: 'Consume findings.',
@@ -202,6 +202,25 @@ describe('collaboration.publish', () => {
     expect(replay).toEqual({ ...(first as object), replayed: true })
     const deliveryId = (first as { deliveryIds: string[] }).deliveryIds[0]!
     expect(session.getDelivery(deliveryId)).toBeDefined()
+  })
+
+  it('rejects a publish topic not declared by the authenticated producer step', async () => {
+    const { runtime, producerTask, dispatch, capability } = setupAuthorizedPublish()
+    const method = publishMethod()
+    const params = method.params?.parse({
+      from: 'term_producer',
+      taskId: producerTask.id,
+      dispatchId: dispatch.id,
+      publicationId: 'publication-wrong-topic',
+      topic: '/other',
+      type: 'finding',
+      priority: 'normal',
+      body: 'wrong topic'
+    })
+
+    await expect(
+      method.handler(params, { runtime, orchestrationCapability: capability } as RpcContext)
+    ).rejects.toMatchObject({ code: 'collaboration_topic_not_allowed' })
   })
 
   it('rejects one publication id reused with different content', async () => {

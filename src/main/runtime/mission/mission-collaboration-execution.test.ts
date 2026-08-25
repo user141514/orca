@@ -52,6 +52,77 @@ describe('MissionCollaborationExecution', () => {
     }
   })
 
+  it('applies planner admission inside the registered runtime session', async () => {
+    db = new OrchestrationDb(':memory:')
+    const runtime = new OrcaRuntimeService()
+    runtime.setOrchestrationDb(db)
+    vi.spyOn(RuntimeOrchestrationRunner.prototype, 'runExisting').mockImplementation(
+      async (runId) => ({
+        runId,
+        state: 'blocked'
+      })
+    )
+    const execution = new MissionCollaborationExecution(runtime, 'repo::worktree', 'codex')
+    const receipt = await execution.start({
+      objective: 'filter collaboration messages',
+      maxConcurrency: 2,
+      steps: [
+        { key: 'producer', instruction: 'publish findings', publishesTo: ['/findings'] },
+        {
+          key: 'consumer',
+          instruction: 'consume findings',
+          subscribesTo: ['/findings'],
+          admission: { acceptedTypes: ['finding'], minPriority: 'high' }
+        }
+      ]
+    })
+    const session = getCollaborationRuntimeSession(runtime, receipt.runId)!
+    const tasks = new Map(db.listTasks({ runId: receipt.runId }).map((task) => [task.spec, task]))
+    const producerTask = tasks.get('publish findings')!
+    const consumerTask = tasks.get('consume findings')!
+
+    session.publishFromTask({
+      taskId: producerTask.id,
+      message: {
+        id: 'normal',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'normal',
+        body: 'low'
+      },
+      deliveryIdFor: () => 'delivery-normal'
+    })
+    expect(
+      session.prepareCheckpoint({
+        taskId: consumerTask.id,
+        nowMs: 1_000,
+        leaseMs: 100,
+        limit: 10
+      })
+    ).toEqual([])
+    expect(session.getDelivery('delivery-normal')?.state).toBe('acked')
+
+    session.publishFromTask({
+      taskId: producerTask.id,
+      message: {
+        id: 'high',
+        topic: '/findings',
+        type: 'finding',
+        priority: 'high',
+        body: 'accepted'
+      },
+      deliveryIdFor: () => 'delivery-high'
+    })
+    expect(
+      session.prepareCheckpoint({
+        taskId: consumerTask.id,
+        nowMs: 1_001,
+        leaseMs: 100,
+        limit: 10
+      })
+    ).toMatchObject([{ deliveryId: 'delivery-high', message: { body: 'accepted' } }])
+  })
+
   it('unregisters the collaboration session when the orchestration run completes', async () => {
     db = new OrchestrationDb(':memory:')
     const runtime = new OrcaRuntimeService()

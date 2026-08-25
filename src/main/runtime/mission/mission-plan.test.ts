@@ -36,6 +36,79 @@ describe('Mission planning contract', () => {
     })
   })
 
+  it('accepts explicit collaboration topics and admission policy', () => {
+    const plan = parseMissionPlan(
+      JSON.stringify({
+        mode: 'orchestration',
+        objective: 'Share findings while both workers run',
+        maxConcurrency: 2,
+        tasks: [
+          {
+            key: 'producer',
+            spec: 'Investigate and publish findings.',
+            deps: [],
+            publishesTo: ['/findings']
+          },
+          {
+            key: 'consumer',
+            spec: 'Consume findings at stage checkpoints.',
+            deps: [],
+            subscribesTo: ['/findings'],
+            admission: { acceptedTypes: ['finding'], minPriority: 'normal' }
+          }
+        ]
+      })
+    )
+    expect(plan).toMatchObject({
+      mode: 'orchestration',
+      tasks: [
+        { key: 'producer', publishesTo: ['/findings'] },
+        {
+          key: 'consumer',
+          subscribesTo: ['/findings'],
+          admission: { acceptedTypes: ['finding'], minPriority: 'normal' }
+        }
+      ]
+    })
+  })
+
+  it('rejects a subscribed topic with no publisher in the mission', () => {
+    expect(() =>
+      parseMissionPlan(
+        JSON.stringify({
+          mode: 'orchestration',
+          objective: 'orphan subscription',
+          maxConcurrency: 2,
+          tasks: [
+            { key: 'producer', spec: 'Produce.', publishesTo: ['/finding'] },
+            {
+              key: 'consumer',
+              spec: 'Consume.',
+              subscribesTo: ['/findings'],
+              admission: { acceptedTypes: ['finding'], minPriority: 'normal' }
+            }
+          ]
+        })
+      )
+    ).toThrow('Mission plan task consumer subscribesTo topic has no publisher: /findings')
+  })
+
+  it('rejects a subscribed task without admission policy', () => {
+    expect(() =>
+      parseMissionPlan(
+        JSON.stringify({
+          mode: 'orchestration',
+          objective: 'invalid collaboration plan',
+          maxConcurrency: 2,
+          tasks: [
+            { key: 'producer', spec: 'Produce.', publishesTo: ['/findings'] },
+            { key: 'consumer', spec: 'Consume.', subscribesTo: ['/findings'] }
+          ]
+        })
+      )
+    ).toThrow('Mission plan task consumer subscribesTo requires admission')
+  })
+
   it('rejects malformed planner output', () => {
     expect(() => parseMissionPlan('not-json')).toThrow('Mission planner returned invalid JSON.')
   })
@@ -79,6 +152,9 @@ describe('Mission planning contract', () => {
     expect(prompt).toContain('JSON only')
     expect(prompt).toContain('Do not choose execution backends')
     expect(prompt).toContain('worker_done')
+    expect(prompt).toContain('publishesTo')
+    expect(prompt).toContain('subscribesTo')
+    expect(prompt).toContain('acceptedTypes')
     expect(prompt).toContain('Analyze both layers in parallel and integrate them.')
   })
 })
