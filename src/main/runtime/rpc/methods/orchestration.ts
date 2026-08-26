@@ -39,6 +39,8 @@ import type { RunRow } from '../../orchestration/types'
 import { encodeFederatedControlMessage } from '../../orchestration/federation-control-message'
 import { bindCoordinatorMutationPayload } from '../../orchestration/dispatch-message-binding'
 import { getCollaborationWorkerCompletionBlock } from '../../collaboration/collaboration-worker-completion'
+import { getCollaborationRuntimeTopology } from '../../collaboration/collaboration-runtime-registry'
+import { buildCollaborationWorkerProtocolForTask } from '../../collaboration/collaboration-worker-protocol'
 import {
   ORCHESTRATION_FEDERATION_CONTROL_MAIL_PROTOCOL_VERSION,
   ORCHESTRATION_FEDERATION_LIFECYCLE_SETTLEMENT_PROTOCOL_VERSION
@@ -1672,17 +1674,27 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
           resolveDispatchCreator(runtime, params.from),
           maxDepth
         )
+        const workerHandle = params.to ?? 'worker'
+        const cliCommand = params.to
+          ? runtime.getTerminalOrchestrationCliCommand(params.to)
+          : undefined
+        const preCompletionProtocol = buildCollaborationWorkerProtocolForTask({
+          topology: getCollaborationRuntimeTopology(runtime, run.id),
+          taskId: task.id,
+          workerHandle,
+          devMode: params.devMode,
+          cliCommand
+        })
         const preamble = buildDispatchPreamble({
           taskId: task.id,
           dispatchId: 'ctx_dryrun',
           canDispatchSubWorkers: previewDepth < maxDepth,
           taskSpec: task.spec,
           coordinatorHandle: params.from ?? 'coordinator',
-          workerHandle: params.to ?? 'worker',
+          workerHandle,
           devMode: params.devMode,
-          ...(params.to
-            ? { cliCommand: runtime.getTerminalOrchestrationCliCommand(params.to) }
-            : {})
+          cliCommand,
+          preCompletionProtocol
         })
         return { dispatch: null, injected: false, dryRun: true, preamble }
       }
@@ -1737,6 +1749,15 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
         : undefined
 
       // Why: built after ctx so dispatchId is the real ctx.id, letting heartbeats attribute liveness to a specific dispatch context, not just a task.
+      const cliCommand = runtime.getTerminalOrchestrationCliCommand(to)
+      const preCompletionProtocol = buildCollaborationWorkerProtocolForTask({
+        topology: getCollaborationRuntimeTopology(runtime, run.id),
+        taskId: task.id,
+        workerHandle: to,
+        dispatchCapability,
+        devMode: params.devMode,
+        cliCommand
+      })
       const preamble = buildDispatchPreamble({
         taskId: task.id,
         dispatchId: ctx.id,
@@ -1746,7 +1767,8 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
         workerHandle: to,
         dispatchCapability,
         devMode: params.devMode,
-        cliCommand: runtime.getTerminalOrchestrationCliCommand(to)
+        cliCommand,
+        preCompletionProtocol
       })
 
       let injected = false
