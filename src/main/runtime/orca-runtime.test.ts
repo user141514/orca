@@ -1813,6 +1813,28 @@ describe('OrcaRuntimeService.dedupeWorktreeCreate', () => {
 })
 
 describe('OrcaRuntimeService', () => {
+  it('uses orca-dev for an unpackaged runtime even when custom userData lacks the orca-dev substring', async () => {
+    const previousUserDataPath = process.env.ORCA_USER_DATA_PATH
+    const previousIsPackaged = electronMocks.app.isPackaged
+    process.env.ORCA_USER_DATA_PATH = '/tmp/custom-dev-profile'
+    electronMocks.app.isPackaged = false
+    const runtime = createRuntime()
+    syncSinglePty(runtime, 'pty-1')
+    runtime.registerPty('pty-1', TEST_WORKTREE_ID, null, undefined, false)
+
+    try {
+      const [terminal] = (await runtime.listTerminals()).terminals
+      expect(runtime.getTerminalOrchestrationCliCommand(terminal.handle)).toBe('orca-dev')
+    } finally {
+      electronMocks.app.isPackaged = previousIsPackaged
+      if (previousUserDataPath === undefined) {
+        delete process.env.ORCA_USER_DATA_PATH
+      } else {
+        process.env.ORCA_USER_DATA_PATH = previousUserDataPath
+      }
+    }
+  })
+
   it('projects runtime-backed settings to paired clients', () => {
     const terminalQuickCommands = [
       {
