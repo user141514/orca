@@ -30542,7 +30542,15 @@ export class OrcaRuntimeService {
           try {
             await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId)
           } catch (error) {
-            if (!(error instanceof Error) || error.message !== 'workspace_session_unavailable') {
+            // Why: the PTY stop above already confirmed the exit, and the exit
+            // handler retires the HUB surface before this cleanup runs — a
+            // missing tab here means cleanup already happened, not a live
+            // process. Unlike the pre-kill branch above, this throw must not
+            // fail the close (worker-release regression: release_unknown).
+            if (
+              !(error instanceof Error) ||
+              (error.message !== 'workspace_session_unavailable' && error.message !== 'tab_not_found')
+            ) {
               throw error
             }
             this.notifier?.closeTerminal(tabId)
