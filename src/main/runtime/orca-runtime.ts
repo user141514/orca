@@ -4455,6 +4455,9 @@ export class OrcaRuntimeService {
     if (targetChanged) {
       const target = await this.resolveAutomationTarget(updates, current)
       assertAutomationRunContextMatchesRepo(updates.runContext, target.repo)
+      if (!hasRuntimeAutomationUpdateValue(updates, 'runContext')) {
+        assertAutomationRunContextMatchesRepo(current.runContext, target.repo)
+      }
       if (patch.reuseSession === true && target.workspaceMode !== 'existing') {
         throw new Error('Session reuse requires an existing workspace target.')
       }
