@@ -901,7 +901,10 @@ import {
 } from '../project-runtime-git-options'
 import { resolveLocalProjectRuntimeForWorktreeId } from '../local-project-runtime-resolution'
 import type { ProjectExecutionRuntimeResolution } from '../../shared/project-execution-runtime'
-import { resolveTerminalOrchestrationCliCommand } from './orchestration/cli-command'
+import {
+  resolveTerminalOrchestrationCliCommand,
+  type OrchestrationCliCommand
+} from './orchestration/cli-command'
 import {
   scanLocalRepoWorktreesForResolution,
   type RuntimeWorktreeScanResult
@@ -14615,7 +14618,7 @@ export class OrcaRuntimeService {
       : undefined
   }
 
-  getTerminalOrchestrationCliCommand(handle: string): 'orca' | 'orca-ide' {
+  getTerminalOrchestrationCliCommand(handle: string): OrchestrationCliCommand {
     let pty: RuntimePtyWorktreeRecord | null = null
     try {
       const ptyId = this.resolveLeafForHandle(handle)?.ptyId
@@ -14632,7 +14635,8 @@ export class OrcaRuntimeService {
       worktreeId: pty.worktreeId,
       projectRuntime: this.store
         ? resolveLocalProjectRuntimeForWorktreeId(this.requireStore(), pty.worktreeId)
-        : undefined
+        : undefined,
+      devMode: process.env.ORCA_USER_DATA_PATH?.includes('orca-dev') === true
     })
   }
 
@@ -30549,7 +30553,8 @@ export class OrcaRuntimeService {
             // fail the close (worker-release regression: release_unknown).
             if (
               !(error instanceof Error) ||
-              (error.message !== 'workspace_session_unavailable' && error.message !== 'tab_not_found')
+              (error.message !== 'workspace_session_unavailable' &&
+                error.message !== 'tab_not_found')
             ) {
               throw error
             }
