@@ -464,6 +464,11 @@ export function classifyRuntimeLongPoll(request: RpcRequest): RuntimeLongPollCla
   if (request.method === 'orchestration.ask') {
     return 'ask'
   }
+  // Why: workerStart may spend up to 60s waiting for TUI readiness; without
+  // long-poll keepalives the 30s Unix-socket idle timer drops the start receipt.
+  if (request.method === 'orchestration.workerStart') {
+    return 'wait'
+  }
   if (request.method === 'orchestration.check') {
     const params = request.params as { wait?: unknown } | undefined
     return params?.wait === true ? 'wait' : null
