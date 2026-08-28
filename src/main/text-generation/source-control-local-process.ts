@@ -46,10 +46,17 @@ export function runLocalSourceControlPlan(input: {
   env: NodeJS.ProcessEnv | undefined
   emptyResultName: string
   operation: TextGenerationOperation
+  signal?: AbortSignal
   wslDistro?: string
   holdHomeLockUntilExit: boolean
   spawnAgent: SpawnSourceControlAgent
 }): LocalProcessExecution<InternalTextGenerationResult> {
+  if (input.signal?.aborted) {
+    return {
+      result: Promise.resolve({ success: false, error: 'Generation canceled.', canceled: true }),
+      processClosed: Promise.resolve()
+    }
+  }
   const { plan, cwd, operation, holdHomeLockUntilExit } = input
   let markProcessClosed!: () => void
   const processClosed = new Promise<void>((resolve) => {
@@ -88,10 +95,12 @@ export function runLocalSourceControlPlan(input: {
     let outputLimitExceeded = false
     let settled = false
     let canceledByUser = false
+    let waitForProcessTermination = false
     const laneKey = localGenerationLaneKey(operation, cwd)
     let timer: ReturnType<typeof setTimeout> | null = null
     let terminationComplete: Promise<void> | null = null
     let detachChildListeners = (): void => {}
+    let detachAbortListener = (): void => {}
     const startTermination = (): void => {
       terminationComplete ??= killSourceControlAgentProcess(child)
     }
@@ -108,16 +117,27 @@ export function runLocalSourceControlPlan(input: {
         timer = null
       }
       detachChildListeners()
+      detachAbortListener()
       clearLocalGenerationCancelToken(laneKey, cancel)
       if (!holdHomeLockUntilExit) {
         markProcessClosed()
       }
       resolve(value)
     }
-    const cancel = (): void => {
+    const cancel = (waitForTermination = false): void => {
+      if (canceledByUser) {
+        return
+      }
       canceledByUser = true
+      waitForProcessTermination = waitForTermination
       startTermination()
-      finalize({ success: false, error: 'Generation canceled.', canceled: true })
+      if (!waitForTermination) {
+        finalize({ success: false, error: 'Generation canceled.', canceled: true })
+      } else if (process.platform === 'win32') {
+        void (terminationComplete ?? Promise.resolve()).then(() =>
+          finalize({ success: false, error: 'Generation canceled.', canceled: true })
+        )
+      }
     }
     setLocalGenerationCancelToken(laneKey, cancel)
     timer = setTimeout(() => {
@@ -166,7 +186,13 @@ export function runLocalSourceControlPlan(input: {
     const onClose = (code: number | null): void => {
       markClosedAfterTermination()
       if (canceledByUser) {
-        finalize({ success: false, error: 'Generation canceled.', canceled: true })
+        if (waitForProcessTermination) {
+          void (terminationComplete ?? Promise.resolve()).then(() =>
+            finalize({ success: false, error: 'Generation canceled.', canceled: true })
+          )
+        } else {
+          finalize({ success: false, error: 'Generation canceled.', canceled: true })
+        }
         return
       }
       if (outputLimitExceeded) {
@@ -200,6 +226,14 @@ export function runLocalSourceControlPlan(input: {
       child.stderr?.off?.('data', onStderrData)
       child.off?.('error', onError)
       child.off?.('close', onClose)
+    }
+    if (input.signal) {
+      const onAbort = (): void => cancel(true)
+      input.signal.addEventListener('abort', onAbort, { once: true })
+      detachAbortListener = () => input.signal?.removeEventListener('abort', onAbort)
+      if (input.signal.aborted) {
+        onAbort()
+      }
     }
     try {
       child.stdin?.end(plan.stdinPayload ?? undefined)

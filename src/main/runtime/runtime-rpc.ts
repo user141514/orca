@@ -162,6 +162,8 @@ const ASK_LONG_POLL_SHARE = 0.5
 const BROWSER_HOST_LONG_POLL_SHARE = 0.5
 // Why: asks and permanent hosts together retain the prior quarter-budget reservation for waits.
 const SPECIALIZED_LONG_POLL_SHARE = 0.75
+// Why: planner generation may hold a socket open while an external agent responds; two concurrent plans are enough.
+const MISSION_PLAN_LONG_POLL_CAP = 2
 
 function createWebClientUrl(endpoint: string, pairingUrl: string): string {
   const url = new URL(endpoint)
@@ -445,13 +447,16 @@ const MOBILE_RPC_METHOD_ALLOWLIST = new Set([
   'worktree.sleep'
 ])
 
-// Why: 'ask' is metered separately from 'wait' — same keepalive/abort wiring, its own sub-cap.
-export type RuntimeLongPollClass = 'ask' | 'browser-host' | 'wait'
+// Why: ask, browser hosting, and mission planning are metered separately from waits.
+export type RuntimeLongPollClass = 'ask' | 'browser-host' | 'mission-plan' | 'wait'
 
 // Why: single classifier for long-poll requests (handlers that block on an external event), shared by counter/abort/keepalive. See §3.1.
 export function classifyRuntimeLongPoll(request: RpcRequest): RuntimeLongPollClass | null {
   if (request.method === 'browser.clientHost.attach') {
     return 'browser-host'
+  }
+  if (request.method === 'mission.plan') {
+    return 'mission-plan'
   }
   if (request.method === 'terminal.wait') {
     return 'wait'
@@ -519,6 +524,7 @@ export class OrcaRuntimeRpcServer {
   private readonly askLongPollCap: number
   private readonly browserHostLongPollCap: number
   private readonly browserHostLongPollCapPerDevice: number
+  private readonly missionPlanLongPollCap = MISSION_PLAN_LONG_POLL_CAP
   private readonly specializedLongPollCap: number
   private readonly relayRevokeOutbox: RelayRevokeOutbox
   private deviceRegistry: DeviceRegistry | null = null
@@ -553,6 +559,7 @@ export class OrcaRuntimeRpcServer {
   // Why: subset of activeLongPolls held by orchestration.ask, fenced by askLongPollCap.
   private activeAskLongPolls = 0
   private activeBrowserHostLongPolls = 0
+  private activeMissionPlanLongPolls = 0
   private readonly activeBrowserHostLongPollsByDevice = new Map<string, number>()
 
   constructor({
@@ -1584,6 +1591,12 @@ export class OrcaRuntimeRpcServer {
       return 'orchestration.ask capacity reached; retry with backoff'
     }
     if (
+      longPoll === 'mission-plan' &&
+      this.activeMissionPlanLongPolls >= this.missionPlanLongPollCap
+    ) {
+      return 'mission.plan capacity reached; retry with backoff'
+    }
+    if (
       longPoll === 'browser-host' &&
       (this.activeBrowserHostLongPolls >= this.browserHostLongPollCap ||
         (pairedDeviceId !== undefined &&
@@ -1595,6 +1608,8 @@ export class OrcaRuntimeRpcServer {
     this.activeLongPolls += 1
     if (longPoll === 'ask') {
       this.activeAskLongPolls += 1
+    } else if (longPoll === 'mission-plan') {
+      this.activeMissionPlanLongPolls += 1
     } else if (longPoll === 'browser-host') {
       this.activeBrowserHostLongPolls += 1
       if (pairedDeviceId !== undefined) {
@@ -1614,6 +1629,8 @@ export class OrcaRuntimeRpcServer {
     this.activeLongPolls = Math.max(0, this.activeLongPolls - 1)
     if (longPoll === 'ask') {
       this.activeAskLongPolls = Math.max(0, this.activeAskLongPolls - 1)
+    } else if (longPoll === 'mission-plan') {
+      this.activeMissionPlanLongPolls = Math.max(0, this.activeMissionPlanLongPolls - 1)
     } else if (longPoll === 'browser-host') {
       this.activeBrowserHostLongPolls = Math.max(0, this.activeBrowserHostLongPolls - 1)
       if (pairedDeviceId !== undefined) {

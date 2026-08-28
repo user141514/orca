@@ -418,7 +418,7 @@ describe('generateCommitMessageFromContext', () => {
       })
       await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1))
       cancelGenerateCommitMessageLocal('C:\\repo')
-      await expect(first).resolves.toMatchObject({ canceled: true })
+      await expect(Promise.race([first, Promise.resolve('pending')])).resolves.toBe('pending')
 
       const second = generateCommitMessageFromContext(context, params, {
         kind: 'local',
@@ -430,6 +430,7 @@ describe('generateCommitMessageFromContext', () => {
       expect(spawnMock).toHaveBeenCalledTimes(1)
 
       finishTreeKill()
+      await expect(first).resolves.toMatchObject({ canceled: true })
       await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2))
       secondChild.stdout.emit('data', Buffer.from('Update README\n'))
       secondChild.emit('close', 0)

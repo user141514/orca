@@ -147,4 +147,8 @@ describe('resolveMethodTimeoutMs', () => {
       5_000 + LONG_POLL_CLIENT_GRACE_MS
     )
   })
+
+  it('gives mission.plan its planning budget plus transport grace', () => {
+    expect(resolveMethodTimeoutMs('mission.plan', undefined, 10_000)).toBe(130_000)
+  })
 })

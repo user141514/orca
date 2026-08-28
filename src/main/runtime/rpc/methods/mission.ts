@@ -9,6 +9,7 @@ import {
 } from '../../../../shared/tui-agent-selection'
 import { detectInstalledAgentsWithShellPathHydration } from '../../../ipc/preflight'
 import { generateTextFromPrompt } from '../../../text-generation/commit-message-text-generation'
+import { SOURCE_CONTROL_GENERATION_TIMEOUT_MS } from '../../../text-generation/source-control-generation-limits'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import {
   buildMissionPlanRepairPrompt,
@@ -27,11 +28,13 @@ const MissionPlanParams = z.object({
     .optional()
 })
 
+const MISSION_PLANNING_TOTAL_TIMEOUT_MS = SOURCE_CONTROL_GENERATION_TIMEOUT_MS * 2
+
 export const MISSION_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'mission.plan',
     params: MissionPlanParams,
-    handler: async (params, { runtime }) => {
+    handler: async (params, { runtime, signal }) => {
       const settings = runtime.getClientSettings()
       const agents = await resolveMissionAgents(params.agent, settings)
 
@@ -44,12 +47,27 @@ export const MISSION_METHODS: RpcMethod[] = [
         )
       }
 
+      throwIfMissionPlanningAborted(signal)
+
       let lastPlannerError: OrchestrationError | null = null
+      const planningStartedAt = Date.now()
       for (const [index, agent] of agents.entries()) {
+        throwIfMissionPlanningAborted(signal)
+        if (!canStartMissionPlanningAttempt(planningStartedAt)) {
+          break
+        }
         try {
-          const planned = await planMissionWithAgent(params.text, agent, settings)
+          const planned = await planMissionWithAgent(
+            params.text,
+            agent,
+            settings,
+            planningStartedAt,
+            signal
+          )
+          throwIfMissionPlanningAborted(signal)
           return { ...planned, agentCandidates: agents.slice(index) }
         } catch (error) {
+          throwIfMissionPlanningAborted(signal)
           if (
             params.agent ||
             !(error instanceof OrchestrationError) ||
@@ -60,6 +78,8 @@ export const MISSION_METHODS: RpcMethod[] = [
           lastPlannerError = error
         }
       }
+
+      throwIfMissionPlanningAborted(signal)
 
       throw new OrchestrationError(
         'mission_planner_failed',
@@ -72,7 +92,9 @@ export const MISSION_METHODS: RpcMethod[] = [
 async function planMissionWithAgent(
   mission: string,
   agent: TuiAgent,
-  settings: ReturnType<OrcaRuntimeService['getClientSettings']>
+  settings: ReturnType<OrcaRuntimeService['getClientSettings']>,
+  planningStartedAt: number,
+  signal?: AbortSignal
 ) {
   const plannerSpec = getCommitMessageAgentSpec(agent)
   if (!plannerSpec) {
@@ -85,41 +107,92 @@ async function planMissionWithAgent(
     agentCommandOverride: settings.agentCmdOverrides?.[agent]
   }
   const generationTarget = { kind: 'local' as const, cwd: homedir() }
-  const generationOptions = { useAgentDefaultModel: true } as const
-  const planning = await generateTextFromPrompt(
-    buildMissionPlanningPrompt(mission),
-    generationParams,
-    generationTarget,
-    'mission-plan',
-    generationOptions
-  )
-  if (!planning.success) {
-    throw new OrchestrationError('mission_planner_failed', planning.error)
-  }
-
+  const generationOptions = { useAgentDefaultModel: true, signal } as const
+  let planning: Awaited<ReturnType<typeof generateTextFromPrompt>>
   try {
-    return { mission, agent, plan: parseMissionPlan(planning.text) }
-  } catch (error) {
-    const validationError = error instanceof Error ? error.message : String(error)
-    const repaired = await generateTextFromPrompt(
-      buildMissionPlanRepairPrompt(mission, planning.text, validationError),
+    planning = await generateTextFromPrompt(
+      buildMissionPlanningPrompt(mission),
       generationParams,
       generationTarget,
       'mission-plan',
       generationOptions
     )
+  } catch (error) {
+    throwIfMissionPlanningAborted(signal)
+    throw error
+  }
+  throwIfMissionPlanningAborted(signal)
+  if (!planning.success) {
+    if (planning.canceled) {
+      throwMissionPlanningAborted()
+    }
+    throw new OrchestrationError('mission_planner_failed', planning.error)
+  }
+
+  let plan: ReturnType<typeof parseMissionPlan>
+  try {
+    plan = parseMissionPlan(planning.text)
+  } catch (error) {
+    const validationError = error instanceof Error ? error.message : String(error)
+    throwIfMissionPlanningAborted(signal)
+    if (!canStartMissionPlanningAttempt(planningStartedAt)) {
+      throw new OrchestrationError(
+        'mission_planner_failed',
+        'Mission planner did not have enough time remaining for a repair attempt.'
+      )
+    }
+    let repaired: Awaited<ReturnType<typeof generateTextFromPrompt>>
+    try {
+      repaired = await generateTextFromPrompt(
+        buildMissionPlanRepairPrompt(mission, planning.text, validationError),
+        generationParams,
+        generationTarget,
+        'mission-plan',
+        generationOptions
+      )
+    } catch (repairError) {
+      throwIfMissionPlanningAborted(signal)
+      throw repairError
+    }
+    throwIfMissionPlanningAborted(signal)
     if (!repaired.success) {
+      if (repaired.canceled) {
+        throwMissionPlanningAborted()
+      }
       throw new OrchestrationError('mission_planner_failed', repaired.error)
     }
+    let repairedPlan: ReturnType<typeof parseMissionPlan>
     try {
-      return { mission, agent, plan: parseMissionPlan(repaired.text) }
+      repairedPlan = parseMissionPlan(repaired.text)
     } catch (repairError) {
+      throwIfMissionPlanningAborted(signal)
       throw new OrchestrationError(
         'mission_planner_failed',
         repairError instanceof Error ? repairError.message : String(repairError)
       )
     }
+    throwIfMissionPlanningAborted(signal)
+    return { mission, agent, plan: repairedPlan }
   }
+  throwIfMissionPlanningAborted(signal)
+  return { mission, agent, plan }
+}
+
+function canStartMissionPlanningAttempt(planningStartedAt: number): boolean {
+  return (
+    Date.now() - planningStartedAt + SOURCE_CONTROL_GENERATION_TIMEOUT_MS <=
+    MISSION_PLANNING_TOTAL_TIMEOUT_MS
+  )
+}
+
+function throwIfMissionPlanningAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throwMissionPlanningAborted()
+  }
+}
+
+function throwMissionPlanningAborted(): never {
+  throw new OrchestrationError('request_aborted', 'Mission planning was cancelled.')
 }
 
 async function resolveMissionAgents(

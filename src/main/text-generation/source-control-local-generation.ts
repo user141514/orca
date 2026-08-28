@@ -23,6 +23,7 @@ export function runLocalPlanForAgent(input: {
   target: LocalGenerationTarget
   emptyResultName: string
   operation: TextGenerationOperation
+  signal?: AbortSignal
   spawnAgent: SpawnSourceControlAgent
 }): Promise<InternalTextGenerationResult> {
   const start = (
@@ -34,6 +35,7 @@ export function runLocalPlanForAgent(input: {
       env: input.target.env,
       emptyResultName: input.emptyResultName,
       operation: input.operation,
+      signal: input.signal,
       wslDistro: input.target.wslDistro,
       holdHomeLockUntilExit,
       spawnAgent: input.spawnAgent
@@ -41,16 +43,22 @@ export function runLocalPlanForAgent(input: {
   if (input.agentId !== 'codex') {
     return start().result
   }
-  return runCodexLocalPlanUnderHomeLock(start, input.target, input.operation)
+  return runCodexLocalPlanUnderHomeLock(start, input.target, input.operation, input.signal)
 }
 
 function runCodexLocalPlanUnderHomeLock(
   start: (holdHomeLockUntilExit: boolean) => LocalProcessExecution<InternalTextGenerationResult>,
   target: LocalGenerationTarget,
-  operation: TextGenerationOperation
+  operation: TextGenerationOperation,
+  signal?: AbortSignal
 ): Promise<InternalTextGenerationResult> {
+  if (signal?.aborted) {
+    return Promise.resolve({ success: false, error: 'Generation canceled.', canceled: true })
+  }
   const laneKey = localGenerationLaneKey(operation, target.cwd)
   let canceledWhileQueued = false
+  let dequeued = false
+  let detachAbortListener = (): void => {}
   let publishResult!: (result: InternalTextGenerationResult) => void
   let rejectResult!: (error: unknown) => void
   let resultPublished = false
@@ -64,14 +72,30 @@ function runCodexLocalPlanUnderHomeLock(
     rejectResult = reject
   })
   const queuedCancel = (): void => {
+    if (dequeued) {
+      return
+    }
     canceledWhileQueued = true
     publishResult({ success: false, error: 'Generation canceled.', canceled: true })
   }
   setLocalGenerationCancelToken(laneKey, queuedCancel)
+  if (signal) {
+    signal.addEventListener('abort', queuedCancel, { once: true })
+    detachAbortListener = () => signal.removeEventListener('abort', queuedCancel)
+    if (signal.aborted) {
+      queuedCancel()
+    }
+  }
   void withCodexHomeProcessLock(
     resolveCodexHomeProcessLockKeyForSpawnEnv(target.env, target.wslDistro),
     async () => {
       if (canceledWhileQueued) {
+        publishResult({ success: false, error: 'Generation canceled.', canceled: true })
+        return
+      }
+      dequeued = true
+      detachAbortListener()
+      if (signal?.aborted) {
         publishResult({ success: false, error: 'Generation canceled.', canceled: true })
         return
       }
@@ -92,7 +116,10 @@ function runCodexLocalPlanUnderHomeLock(
         rejectResult(error)
       }
     })
-    .finally(() => clearLocalGenerationCancelToken(laneKey, queuedCancel))
+    .finally(() => {
+      detachAbortListener()
+      clearLocalGenerationCancelToken(laneKey, queuedCancel)
+    })
   return result
 }
 

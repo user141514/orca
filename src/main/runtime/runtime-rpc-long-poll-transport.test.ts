@@ -9,6 +9,7 @@ import { readRuntimeMetadata } from './runtime-metadata'
 import { createCollaborationTopology } from './collaboration/collaboration-topology'
 import { registerCollaborationRuntimeTopology } from './collaboration/collaboration-runtime-registry'
 import { OrcaRuntimeRpcServer } from './runtime-rpc'
+import { defineMethod } from './rpc/core'
 import {
   sendRequest,
   openFramedSession,
@@ -76,6 +77,45 @@ describe('OrcaRuntimeRpcServer', () => {
   // Exercise the real socket (not a mock) so we catch buffer/flush regressions
   // that a unit-level test would miss.
   describe('long-poll transport (§3.1)', () => {
+    it('emits keepalive frames while mission.plan blocks', async () => {
+      const userDataPath = mkdtempSync(join(tmpdir(), 'orca-mission-plan-keepalive-'))
+      const server = new OrcaRuntimeRpcServer({
+        runtime: new OrcaRuntimeService(),
+        userDataPath,
+        keepaliveIntervalMs: 30,
+        methods: [
+          defineMethod({
+            name: 'mission.plan',
+            params: null,
+            handler: async () => {
+              await sleep(150)
+              return { planned: true }
+            }
+          })
+        ]
+      })
+      await server.start()
+
+      try {
+        const metadata = readRuntimeMetadata(userDataPath)
+        const session = openFramedSession(metadata!.transports[0]!.endpoint, {
+          id: 'req_mission_plan',
+          authToken: metadata!.authToken,
+          method: 'mission.plan'
+        })
+        await session.done
+
+        expect(session.frames.filter((frame) => frame._keepalive === true).length).toBeGreaterThanOrEqual(2)
+        expect(session.frames.find((frame) => frame.ok !== undefined)).toMatchObject({
+          id: 'req_mission_plan',
+          ok: true,
+          result: { planned: true }
+        })
+      } finally {
+        await server.stop()
+      }
+    })
+
     it('emits keepalive frames while a check --wait handler blocks', async () => {
       const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
       const runtime = new OrcaRuntimeService()

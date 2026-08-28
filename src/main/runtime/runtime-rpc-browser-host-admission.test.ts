@@ -4,11 +4,23 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { WebSocket } from 'ws'
+import type * as RunProcess from '../../shared/child-process/run-process'
+import { spawnProcess } from '../../shared/child-process/run-process'
 import { DeviceRegistry } from './device-registry'
 import { OrcaRuntimeService } from './orca-runtime'
 import { defineStreamingMethod, type RpcRequest } from './rpc/core'
+import { MISSION_METHODS } from './rpc/methods/mission'
 import { classifyRuntimeLongPoll, OrcaRuntimeRpcServer } from './runtime-rpc'
 import { withCurrentOrchestrationContract } from './runtime-rpc-test-harness'
+
+const { spawnProcessMock } = vi.hoisted(() => ({ spawnProcessMock: vi.fn() }))
+
+vi.mock('../../shared/child-process/run-process', async (importOriginal) => ({
+  ...(await importOriginal<typeof RunProcess>()),
+  spawnProcess: spawnProcessMock
+}))
+
+const mockedSpawnProcess = vi.mocked(spawnProcess)
 
 const request = (method: string, params?: unknown): RpcRequest => ({
   id: method,
@@ -20,11 +32,174 @@ const request = (method: string, params?: unknown): RpcRequest => ({
 describe('runtime RPC browser-host admission', () => {
   it('classifies host attachment for bounded disconnect-aware admission', () => {
     expect(classifyRuntimeLongPoll(request('browser.clientHost.attach'))).toBe('browser-host')
+    expect(classifyRuntimeLongPoll(request('mission.plan'))).toBe('mission-plan')
     expect(classifyRuntimeLongPoll(request('terminal.wait'))).toBe('wait')
     expect(classifyRuntimeLongPoll(request('orchestration.ask'))).toBe('ask')
     expect(classifyRuntimeLongPoll(request('orchestration.workerStart'))).toBe('wait')
     expect(classifyRuntimeLongPoll(request('orchestration.check', { wait: true }))).toBe('wait')
     expect(classifyRuntimeLongPoll(request('status.get'))).toBeNull()
+  })
+
+  it('caps mission planning independently while accounting for the total long-poll cap', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-mission-plan-admission-'))
+    const blockingMethod = (name: 'mission.plan' | 'terminal.wait') =>
+      defineStreamingMethod({
+        name,
+        params: null,
+        handler: async (_params, { signal }) =>
+          await new Promise<void>((resolve) =>
+            signal?.addEventListener('abort', () => resolve(), { once: true })
+          )
+      })
+    const server = new OrcaRuntimeRpcServer({
+      runtime: new OrcaRuntimeService(),
+      userDataPath,
+      longPollCap: 3,
+      methods: [blockingMethod('mission.plan'), blockingMethod('terminal.wait')]
+    })
+    server['deviceRegistry'] = new DeviceRegistry(userDataPath)
+    const device = server['deviceRegistry'].addDevice('runtime-test', 'runtime')
+    server['mobileSocketWiring'] = {
+      getConnectionId: () => 'connection-a'
+    } as unknown as NonNullable<(typeof server)['mobileSocketWiring']>
+    const socket = new FakeWebSocket()
+    const replies: Record<string, unknown>[] = []
+    const dispatch = (id: string, method: 'mission.plan' | 'terminal.wait') =>
+      server['handleWebSocketMessage'](
+        JSON.stringify({ id, method, deviceToken: device.token }),
+        (reply) => replies.push(JSON.parse(reply) as Record<string, unknown>),
+        () => {},
+        undefined,
+        socket as unknown as WebSocket
+      )
+
+    try {
+      const plans = [dispatch('plan-a', 'mission.plan'), dispatch('plan-b', 'mission.plan')]
+      await vi.waitFor(() => expect(server['activeMissionPlanLongPolls']).toBe(2))
+      expect(server['activeLongPolls']).toBe(2)
+
+      await dispatch('plan-overflow', 'mission.plan')
+      expect(replies).toContainEqual(
+        expect.objectContaining({
+          id: 'plan-overflow',
+          ok: false,
+          error: expect.objectContaining({
+            message: 'mission.plan capacity reached; retry with backoff'
+          })
+        })
+      )
+      expect(server['activeLongPolls']).toBe(2)
+
+      const wait = dispatch('wait-a', 'terminal.wait')
+      await vi.waitFor(() => expect(server['activeLongPolls']).toBe(3))
+      await dispatch('wait-overflow', 'terminal.wait')
+      expect(replies).toContainEqual(
+        expect.objectContaining({
+          id: 'wait-overflow',
+          ok: false,
+          error: expect.objectContaining({
+            message: 'long-poll capacity reached; retry with backoff'
+          })
+        })
+      )
+
+      socket.readyState = 3
+      socket.emit('close')
+      await Promise.all([...plans, wait])
+      expect(server['activeLongPolls']).toBe(0)
+      expect(server['activeMissionPlanLongPolls']).toBe(0)
+    } finally {
+      await server.stop()
+      rmSync(userDataPath, { recursive: true, force: true })
+    }
+  })
+
+  it('holds mission-plan admission until a disconnected planner child terminates', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-mission-plan-disconnect-'))
+    const firstChild = createPlannerChild(101)
+    const secondChild = createPlannerChild(102)
+    const retryChild = createPlannerChild(103)
+    const spawnedChildren = [firstChild, secondChild, retryChild]
+    mockedSpawnProcess.mockReset()
+    mockedSpawnProcess.mockImplementation(() => spawnedChildren.shift() as never)
+
+    const runtime = new OrcaRuntimeService()
+    vi.spyOn(runtime, 'getClientSettings').mockReturnValue({
+      defaultTuiAgent: 'pi',
+      disabledTuiAgents: [],
+      agentCmdOverrides: {}
+    } as unknown as ReturnType<OrcaRuntimeService['getClientSettings']>)
+    vi.spyOn(runtime, 'showManagedTerminalWorkspace').mockResolvedValue({} as never)
+    const server = new OrcaRuntimeRpcServer({
+      runtime,
+      userDataPath,
+      longPollCap: 3,
+      methods: MISSION_METHODS
+    })
+    server['deviceRegistry'] = new DeviceRegistry(userDataPath)
+    const device = server['deviceRegistry'].addDevice('runtime-test', 'runtime')
+    const firstSocket = new FakeWebSocket()
+    const secondSocket = new FakeWebSocket()
+    const retrySocket = new FakeWebSocket()
+    const replies: Record<string, unknown>[] = []
+    const dispatch = (id: string, socket: FakeWebSocket) =>
+      server['handleWebSocketMessage'](
+        JSON.stringify({
+          id,
+          method: 'mission.plan',
+          deviceToken: device.token,
+          params: { text: 'Inspect this task.', worktree: 'id:repo::worktree', agent: 'pi' }
+        }),
+        (reply) => replies.push(JSON.parse(reply) as Record<string, unknown>),
+        () => {},
+        undefined,
+        socket as unknown as WebSocket
+      )
+
+    try {
+      const first = dispatch('plan-first', firstSocket)
+      const second = dispatch('plan-second', secondSocket)
+      await vi.waitFor(() => expect(mockedSpawnProcess).toHaveBeenCalledTimes(2))
+      expect(server['activeMissionPlanLongPolls']).toBe(2)
+
+      firstSocket.readyState = 3
+      firstSocket.emit('close')
+      expect(firstChild.kill).toHaveBeenCalledWith('SIGKILL')
+
+      await dispatch('plan-before-termination', retrySocket)
+      expect(replies).toContainEqual(
+        expect.objectContaining({
+          id: 'plan-before-termination',
+          ok: false,
+          error: expect.objectContaining({
+            message: 'mission.plan capacity reached; retry with backoff'
+          })
+        })
+      )
+      expect(server['activeMissionPlanLongPolls']).toBe(2)
+
+      firstChild.emit('close', null)
+      await first
+      await vi.waitFor(() => expect(server['activeMissionPlanLongPolls']).toBe(1))
+
+      const retry = dispatch('plan-after-termination', retrySocket)
+      await vi.waitFor(() => expect(mockedSpawnProcess).toHaveBeenCalledTimes(3))
+      expect(server['activeMissionPlanLongPolls']).toBe(2)
+
+      secondSocket.readyState = 3
+      retrySocket.readyState = 3
+      secondSocket.emit('close')
+      retrySocket.emit('close')
+      expect(secondChild.kill).toHaveBeenCalledWith('SIGKILL')
+      expect(retryChild.kill).toHaveBeenCalledWith('SIGKILL')
+      secondChild.emit('close', null)
+      retryChild.emit('close', null)
+      await Promise.all([second, retry])
+      expect(server['activeMissionPlanLongPolls']).toBe(0)
+    } finally {
+      await server.stop()
+      rmSync(userDataPath, { recursive: true, force: true })
+    }
   })
 
   it('reserves wait capacity and releases host admission on socket close', async () => {
@@ -265,4 +440,20 @@ describe('runtime RPC browser-host admission', () => {
 class FakeWebSocket extends EventEmitter {
   readonly OPEN = 1
   readyState = this.OPEN
+}
+
+function createPlannerChild(pid: number) {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number
+    kill: ReturnType<typeof vi.fn>
+    stdout: EventEmitter
+    stderr: EventEmitter
+    stdin: { end: ReturnType<typeof vi.fn> }
+  }
+  child.pid = pid
+  child.kill = vi.fn()
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  child.stdin = { end: vi.fn() }
+  return child
 }

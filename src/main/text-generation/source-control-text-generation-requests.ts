@@ -55,6 +55,7 @@ async function executeGenerationPlan(input: {
   target: CommitMessageGenerationTarget
   emptyResultName: string
   operation: TextGenerationOperation
+  signal?: AbortSignal
   spawnAgent: SpawnSourceControlAgent
 }): Promise<InternalTextGenerationResult> {
   return input.target.kind === 'remote'
@@ -70,6 +71,7 @@ async function executeGenerationPlan(input: {
         target: input.target,
         emptyResultName: input.emptyResultName,
         operation: input.operation,
+        signal: input.signal,
         spawnAgent: input.spawnAgent
       })
 }
@@ -80,6 +82,7 @@ export async function generateText(input: {
   target: CommitMessageGenerationTarget
   operation: TextGenerationOperation
   useAgentDefaultModel?: boolean
+  signal?: AbortSignal
   spawnAgent: SpawnSourceControlAgent
 }): Promise<GenerateTextResult> {
   const planned = planCommitMessageGeneration(
