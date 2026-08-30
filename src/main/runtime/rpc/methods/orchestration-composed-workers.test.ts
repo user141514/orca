@@ -163,6 +163,86 @@ describe('orchestration RPC methods', () => {
       )
     })
 
+    it('retries a stalled Codex dispatch after its terminal returns to idle', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.sendTerminalAgentPrompt)
+        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
+        .mockResolvedValueOnce({ handle: 'term_worker', accepted: true, bytesWritten: 1 })
+      const task = db.createTask({ spec: 'retry a swallowed Codex prompt' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as { state: string }
+
+      expect(result).toMatchObject({ state: 'ready' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(2)
+      expect(runtime.waitForTerminal).toHaveBeenLastCalledWith('term_worker', {
+        condition: 'tui-idle',
+        timeoutMs: 30_000
+      })
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not retry a stalled non-Codex dispatch', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        new Error('agent_prompt_stalled')
+      )
+      const task = db.createTask({ spec: 'do not retry a stalled Claude prompt' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'claude'
+      })) as { state: string }
+
+      expect(result).toMatchObject({ state: 'failed' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(1)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not retry a non-stalled Codex dispatch error', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        new Error('terminal_not_writable')
+      )
+      const task = db.createTask({ spec: 'do not retry a rejected Codex prompt' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as { state: string }
+
+      expect(result).toMatchObject({ state: 'failed' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(1)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
+    })
+
+    it('returns the second stalled Codex dispatch failure', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.sendTerminalAgentPrompt)
+        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
+        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
+      const task = db.createTask({ spec: 'report a repeated stalled Codex prompt' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as { state: string; lastError: string }
+
+      expect(result).toMatchObject({ state: 'failed', lastError: 'agent_prompt_stalled' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(2)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+    })
+
     it('applies and reports opaque per-invocation model preferences', async () => {
       setup()
       mockCurrentWorkerStart()

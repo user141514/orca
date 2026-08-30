@@ -1,4 +1,5 @@
 import type { TuiAgent } from '../../../../shared/tui-agent'
+import { isAgentPromptStalledError } from '../../agent-prompt-submission-verification'
 import { buildCollaborationWorkerProtocolForTask } from '../../collaboration/collaboration-worker-protocol'
 import { getCollaborationRuntimeTopology } from '../../collaboration/collaboration-runtime-registry'
 import { buildDispatchPreamble } from '../../orchestration/preamble'
@@ -24,7 +25,6 @@ import { failWorkerStartWithReceipt } from './orchestration-worker-start-receipt
 import { prepareLocalWorkerStart } from './orchestration-worker-start-validation'
 import { resolveDispatchCreator } from './orchestration-dispatch-creator'
 import { resolveOrchestrationCaller } from './orchestration-run-scope'
-
 export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'orchestration.workerStart',
@@ -34,8 +34,6 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
       { runtime, orchestrationMutation, orchestrationCompatibilityEvidence }
     ) => {
       const db = runtime.getOrchestrationDb()
-      // Why: worker-start was the only Run-scoped verb that skipped this, so a
-      // declared --from could name someone else's pane and inherit their depth.
       const coordinatorPane = resolveOrchestrationCaller(runtime, {
         callerTerminalHandle: params.from,
         callerEvidence: orchestrationCompatibilityEvidence
@@ -54,7 +52,6 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           `Task ${params.task} was not found in Run ${run.id}.`
         )
       }
-
       if (params.on) {
         return startFederatedWorker({
           params,
@@ -65,12 +62,10 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           orchestrationMutation
         })
       }
-
       const requestedWorktree = params.worktree ?? 'current'
       const createsWorktree =
         requestedWorktree === 'new-child' || requestedWorktree === 'new-top-level'
       const { agent, launch } = prepareLocalWorkerStart({ params, createsWorktree, runtime })
-
       const coordinatorTerminal = await runtime.showTerminal(params.from)
       const creationWorktree = createsWorktree
         ? await runtime.showManagedWorktree(`id:${coordinatorTerminal.worktreeId}`)
@@ -103,7 +98,6 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           )
         }
       }
-
       const startOptions = {
         worktree: requestedWorktree,
         resolvedWorktreeId: resolvedWorktree?.id ?? null,
@@ -206,7 +200,6 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           throw new Error('Setup terminal failed to start before the gated agent launch.')
         }
         persistWorkerReadinessStage(setupStage)
-
         failedStage = 'agent_readiness'
         const wait = await runtime.waitForTerminal(terminalHandle, {
           condition: 'tui-idle',
@@ -236,8 +229,6 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
 
         failedStage = 'dispatch_input'
         const cliCommand = runtime.getTerminalOrchestrationCliCommand(terminalHandle)
-        // Why: every local Dispatch path derives collaboration instructions from the
-        // same Task topology, so completion gates never outrun the worker preamble.
         const preCompletionProtocol = buildCollaborationWorkerProtocolForTask({
           topology: getCollaborationRuntimeTopology(runtime, run.id),
           taskId: task.id,
@@ -258,7 +249,13 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           cliCommand,
           preCompletionProtocol
         })
-        await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
+        try {
+          await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
+        } catch (error) {
+          if (agent !== 'codex' || !isAgentPromptStalledError(error)) { throw error }
+          if (!(await runtime.waitForTerminal(terminalHandle, { condition: 'tui-idle', timeoutMs: 30_000 })).satisfied) { throw error }
+          await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
+        }
         effects.push({
           kind: 'dispatch_input',
           role: 'agent',
