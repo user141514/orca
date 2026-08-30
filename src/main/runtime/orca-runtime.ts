@@ -36659,8 +36659,17 @@ export class OrcaRuntimeService {
         }
         const snapshotText = read.tail.join('\n')
         const blockedReason = detectTerminalWaitBlockedReason(snapshotText)
-        if (!blockedReason && !isKnownReadyPromptPreview(snapshotText)) {
-          return
+        if (!blockedReason) {
+          const livePty = this.getLivePtyForHandle(waiter.handle)
+          const liveLeaf = livePty ? null : this.getLiveLeafForHandle(waiter.handle).leaf
+          const ptyId = livePty?.pty.ptyId ?? liveLeaf?.ptyId ?? null
+          const lastOutputAt = livePty?.pty.lastOutputAt ?? liveLeaf?.lastOutputAt ?? null
+          if (
+            !isKnownReadyPromptPreview(snapshotText) ||
+            !this.canResolveTuiIdleEvidence(ptyId, snapshotText, lastOutputAt)
+          ) {
+            return
+          }
         }
         // Why resolve before clearing: a stale handle throws while locating the
         // record, and a cleared interval would leave the waiter with no poll and

@@ -16964,7 +16964,7 @@ describe('OrcaRuntimeService', () => {
         rows: 24,
         seq: 1,
         source: 'headless' as const,
-        alternateScreen: false
+        alternateScreen: true
       })
       runtime.setPtyController({
         spawn: vi.fn().mockResolvedValue({ id: 'pty-bg' }),
@@ -17021,8 +17021,10 @@ describe('OrcaRuntimeService', () => {
           startTuiIdleVisibleReadProbe: (waiter: unknown, timeoutMs: number) => void
         }
       ).startTuiIdleVisibleReadProbe(waiter, 10_000)
+      // Cross both the 750ms provider snapshot timeout and the probe's 10ms
+      // retirement margin so an unfenced ready screen has time to settle.
+      await vi.advanceTimersByTimeAsync(2_000)
       await Promise.resolve()
-      await vi.advanceTimersByTimeAsync(1_000)
 
       expect(serializeProviderBuffer).toHaveBeenCalled()
       expect(settled).toBe(false)
