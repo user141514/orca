@@ -3434,6 +3434,9 @@ export class OrcaRuntimeService {
     { status: AgentStatus | null; workingSequence: number; updatedAt: number }
   >()
   private agentPromptPermissionSequenceByPtyId = new Map<string, number>()
+  private agentPromptTerminalWorkingSequenceByPtyId = new Map<string, number>()
+  private agentPromptTerminalEvidenceCarryByPtyId = new Map<string, string>()
+  private agentPromptAcceptedGenerationByPtyId = new Map<string, number>()
   private agentPromptExplicitStatusFloorByPtyId = new Map<string, number>()
   private agentPromptSubmissionTailByPtyId = new Map<string, Promise<void>>()
   private providerSequenceInitializedPtys = new Set<string>()
@@ -11520,6 +11523,7 @@ export class OrcaRuntimeService {
     const cwd = osc7Metadata.cwd
     const cwdChanged = osc7Metadata.cwdChanged
     const agentStatusChunk = this.processAgentStatusOscForPty(ptyId, data)
+    this.recordAgentPromptTerminalEvidence(ptyId, normalizeTerminalChunk(data, '').text)
     this.recordRecentPtyOutputForPathProvenance(ptyId, data)
     // Why: watch terminal output for advertised dev-server URLs (e.g. Vite's
     // `Network: https://local.example.com:3001/`) so the workspace ports
@@ -12401,6 +12405,9 @@ export class OrcaRuntimeService {
     this.agentStatusOscProcessorsByPtyId.delete(ptyId)
     this.agentPromptLifecycleByPtyId.delete(ptyId)
     this.agentPromptPermissionSequenceByPtyId.delete(ptyId)
+    this.agentPromptTerminalWorkingSequenceByPtyId.delete(ptyId)
+    this.agentPromptTerminalEvidenceCarryByPtyId.delete(ptyId)
+    this.agentPromptAcceptedGenerationByPtyId.delete(ptyId)
     this.clearWaitBlockedCheckState(ptyId)
     const pty = this.ptysById.get(ptyId)
     if (pty) {
@@ -12731,6 +12738,9 @@ export class OrcaRuntimeService {
     this.stopRequestedPtyIds.delete(ptyId)
     this.agentPromptLifecycleByPtyId.delete(ptyId)
     this.agentPromptPermissionSequenceByPtyId.delete(ptyId)
+    this.agentPromptTerminalWorkingSequenceByPtyId.delete(ptyId)
+    this.agentPromptTerminalEvidenceCarryByPtyId.delete(ptyId)
+    this.agentPromptAcceptedGenerationByPtyId.delete(ptyId)
     this.agentPromptExplicitStatusFloorByPtyId.set(ptyId, Date.now())
     this.legacyWorkerRecoveredPtys.delete(ptyId)
     // Why: a respawn under the same session id needs its own subscriber-driven attach.
@@ -20095,6 +20105,7 @@ export class OrcaRuntimeService {
       timeoutMs: resolveAgentPromptEffectTimeoutMs(this.getPtyAgent(ptyId)),
       signal: options.signal
     })
+    this.agentPromptAcceptedGenerationByPtyId.set(ptyId, generation)
     return 1
   }
 
@@ -20146,6 +20157,7 @@ export class OrcaRuntimeService {
         ? lifecycle.status
         : (explicit?.status ?? ptyStatus ?? null)
     return {
+      agent: this.getPtyAgent(ptyId),
       generation: this.getPtyLifecycleGeneration(ptyId),
       permissionSequence: this.agentPromptPermissionSequenceByPtyId.get(ptyId) ?? 0,
       workingSequence: lifecycle?.workingSequence ?? 0,
@@ -20154,6 +20166,7 @@ export class OrcaRuntimeService {
       // stateStartedAt, not updatedAt — same-state tool/prompt pings refresh updatedAt and would
       // otherwise pass off an in-progress turn as a new one.
       explicitWorkingStartedAt: explicit?.status === 'working' ? explicit.stateStartedAt : null,
+      terminalWorkingSequence: this.agentPromptTerminalWorkingSequenceByPtyId.get(ptyId) ?? 0,
       outputSequence: this.getPtyOutputSequence(ptyId),
       status
     }
@@ -20162,6 +20175,37 @@ export class OrcaRuntimeService {
   private getPtyAgent(ptyId: string): TuiAgent | null {
     const pty = this.ptysById.get(ptyId)
     return pty?.launchAgent ?? pty?.foregroundAgent ?? null
+  }
+
+  private canResolveTuiIdlePromptPreview(
+    ptyId: string | null,
+    waitText: string,
+    lastOutputAt: number | null
+  ): boolean {
+    if (!ptyId || this.getPtyAgent(ptyId) !== 'codex') {
+      return isKnownReadyPromptPreview(waitText)
+    }
+    if (this.agentPromptAcceptedGenerationByPtyId.get(ptyId) === this.getPtyLifecycleGeneration(ptyId)) {
+      return true
+    }
+    return isSettledReadyPromptPreview(waitText, lastOutputAt)
+  }
+
+  private recordAgentPromptTerminalEvidence(ptyId: string, text: string): void {
+    const carry = this.agentPromptTerminalEvidenceCarryByPtyId.get(ptyId) ?? ''
+    const combined = `${carry}${text}`
+    const marker = CODEX_TERMINAL_WORKING_INDICATOR.exec(combined)
+    CODEX_TERMINAL_WORKING_INDICATOR.lastIndex = 0
+    if (marker && marker.index + marker[0].length > carry.length) {
+      this.agentPromptTerminalWorkingSequenceByPtyId.set(
+        ptyId,
+        (this.agentPromptTerminalWorkingSequenceByPtyId.get(ptyId) ?? 0) + 1
+      )
+    }
+    this.agentPromptTerminalEvidenceCarryByPtyId.set(
+      ptyId,
+      combined.slice(-AGENT_PROMPT_TERMINAL_EVIDENCE_CARRY_CHARS)
+    )
   }
 
   private assertAgentPromptPermissionSafe(
@@ -20329,7 +20373,7 @@ export class OrcaRuntimeService {
       if (
         condition === 'tui-idle' &&
         (this.getAdoptedPtyExplicitIdleStatus(pty.pty) === 'idle' ||
-          isKnownReadyPromptPreview(ptyWaitText))
+          this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt))
       ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
@@ -20387,7 +20431,11 @@ export class OrcaRuntimeService {
             this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else if (
             this.getAdoptedPtyExplicitIdleStatus(live.pty) === 'idle' ||
-            isKnownReadyPromptPreview(livePtyWaitText)
+            this.canResolveTuiIdlePromptPreview(
+              live.pty.ptyId,
+              livePtyWaitText,
+              live.pty.lastOutputAt
+            )
           ) {
             this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else {
@@ -20420,7 +20468,7 @@ export class OrcaRuntimeService {
       const fastPathTitle = leaf.paneTitle ?? this.tabs.get(leaf.tabId)?.title
       if (
         (fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
-        isKnownReadyPromptPreview(leafWaitText)
+        this.canResolveTuiIdlePromptPreview(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
       ) {
         return buildTerminalWaitResult(handle, condition, leaf)
       }
@@ -20498,7 +20546,11 @@ export class OrcaRuntimeService {
             const fastPathTitle = live.leaf.paneTitle ?? this.tabs.get(live.leaf.tabId)?.title
             if (
               (fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
-              isKnownReadyPromptPreview(liveLeafWaitText)
+              this.canResolveTuiIdlePromptPreview(
+                live.leaf.ptyId,
+                liveLeafWaitText,
+                live.leaf.lastOutputAt
+              )
             ) {
               this.resolveWaiter(waiter, buildTerminalWaitResult(handle, condition, live.leaf))
             } else {
@@ -36313,7 +36365,9 @@ export class OrcaRuntimeService {
           )
           return
         }
-        if (isKnownReadyPromptPreview(leafWaitText)) {
+        if (
+          this.canResolveTuiIdlePromptPreview(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
+        ) {
           if (waiter.pollInterval) {
             clearInterval(waiter.pollInterval)
             waiter.pollInterval = null
@@ -36396,7 +36450,7 @@ export class OrcaRuntimeService {
         // Why: adopted background PTY handles use their live xterm title as the same readiness signal as leaf handles.
         if (
           this.getAdoptedPtyExplicitIdleStatus(pty) === 'idle' ||
-          isKnownReadyPromptPreview(ptyWaitText)
+          this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.lastOutputAt)
         ) {
           if (waiter.pollInterval) {
             clearInterval(waiter.pollInterval)
@@ -40847,6 +40901,8 @@ async function assertTerminalInputWithinLimitWithYield(text: string | undefined)
 const TUI_IDLE_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 const TUI_IDLE_POLL_INTERVAL_MS = 2000
 const TUI_IDLE_QUIESCENCE_MS = 3000
+const AGENT_PROMPT_TERMINAL_EVIDENCE_CARRY_CHARS = 256
+const CODEX_TERMINAL_WORKING_INDICATOR = /\bWorking\s*\([^)]{0,160}\besc to interrupt\b/i
 const EXPLICIT_IDLE_TITLE_RE = /(^|\s)(ready|idle|done)(\s|$|[.!?])/i
 const CLAUDE_IDLE_PREFIX = '\u2733'
 const GEMINI_IDLE_PREFIX = '\u25c7'
@@ -40887,6 +40943,14 @@ function isKnownReadyPromptPreview(preview: string): boolean {
     return false
   }
   return true
+}
+
+function isSettledReadyPromptPreview(preview: string, lastOutputAt: number | null): boolean {
+  return (
+    isKnownReadyPromptPreview(preview) &&
+    lastOutputAt !== null &&
+    Date.now() - lastOutputAt >= TUI_IDLE_QUIESCENCE_MS
+  )
 }
 
 function detectTerminalWaitBlockedReason(preview: string): RuntimeTerminalWaitBlockedReason | null {
