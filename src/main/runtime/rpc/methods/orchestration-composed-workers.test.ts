@@ -186,6 +186,30 @@ describe('orchestration RPC methods', () => {
       expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
     })
 
+    it('retries a stalled reused Codex terminal after it returns to idle', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.spyOn(runtime, 'getTerminalRunningTuiAgent').mockResolvedValue('codex')
+      vi.mocked(runtime.sendTerminalAgentPrompt)
+        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
+        .mockResolvedValueOnce({ handle: 'term_worker', accepted: true, bytesWritten: 1 })
+      const task = db.createTask({ spec: 'retry a reused Codex prompt' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        terminal: 'term_worker'
+      })) as { state: string }
+
+      expect(result).toMatchObject({ state: 'ready' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(2)
+      expect(runtime.waitForTerminal).toHaveBeenLastCalledWith('term_worker', {
+        condition: 'tui-idle',
+        timeoutMs: 30_000
+      })
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+    })
+
     it('does not retry a stalled non-Codex dispatch', async () => {
       setup()
       mockCurrentWorkerStart()
@@ -198,6 +222,26 @@ describe('orchestration RPC methods', () => {
         task: task.id,
         from: 'term_coord',
         agent: 'claude'
+      })) as { state: string }
+
+      expect(result).toMatchObject({ state: 'failed' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(1)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not retry a stalled reused non-Codex terminal', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.spyOn(runtime, 'getTerminalRunningTuiAgent').mockResolvedValue('claude')
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        new Error('agent_prompt_stalled')
+      )
+      const task = db.createTask({ spec: 'do not retry a reused Claude prompt' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        terminal: 'term_worker'
       })) as { state: string }
 
       expect(result).toMatchObject({ state: 'failed' })
@@ -466,7 +510,7 @@ describe('orchestration RPC methods', () => {
       setup()
       mockCurrentWorkerStart()
       const createWorktree = vi.spyOn(runtime, 'createManagedWorktree')
-      vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
+      vi.spyOn(runtime, 'getTerminalRunningTuiAgent').mockResolvedValue('claude')
       const task = db.createTask({ spec: 'reuse exact worker' })
 
       const result = (await call('orchestration.workerStart', {

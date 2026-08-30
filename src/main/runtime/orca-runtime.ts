@@ -20185,7 +20185,9 @@ export class OrcaRuntimeService {
     if (!ptyId || this.getPtyAgent(ptyId) !== 'codex') {
       return isKnownReadyPromptPreview(waitText)
     }
-    if (this.agentPromptAcceptedGenerationByPtyId.get(ptyId) === this.getPtyLifecycleGeneration(ptyId)) {
+    if (
+      this.agentPromptAcceptedGenerationByPtyId.get(ptyId) === this.getPtyLifecycleGeneration(ptyId)
+    ) {
       return true
     }
     return isSettledReadyPromptPreview(waitText, lastOutputAt)
@@ -20395,15 +20397,15 @@ export class OrcaRuntimeService {
       if (
         condition === 'tui-idle' &&
         pty.pty.lastAgentStatus === 'idle' &&
-        this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)
+        this.canResolveTuiIdleEvidence(pty.pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)
       ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
       if (
         condition === 'tui-idle' &&
         (this.getAdoptedPtyExplicitIdleStatus(pty.pty) === 'idle' ||
-          this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)) &&
-        this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)
+          this.canResolveTuiIdlePromptPreview(pty.pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)) &&
+        this.canResolveTuiIdleEvidence(pty.pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)
       ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
@@ -20459,11 +20461,7 @@ export class OrcaRuntimeService {
             )
           } else if (
             live.pty.lastAgentStatus === 'idle' &&
-            this.canResolveTuiIdleEvidence(
-              live.pty.ptyId,
-              livePtyWaitText,
-              live.pty.lastOutputAt
-            )
+            this.canResolveTuiIdleEvidence(live.pty.ptyId, livePtyWaitText, live.pty.lastOutputAt)
           ) {
             this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else if (
@@ -35631,6 +35629,51 @@ export class OrcaRuntimeService {
     }
   }
 
+  async getTerminalRunningTuiAgent(handle: string): Promise<TuiAgent | null> {
+    try {
+      const livePty = this.getLivePtyForHandle(handle)
+      const leaf = livePty
+        ? this.getPrimaryLeafForPty(livePty.pty.ptyId)
+        : this.getLiveLeafForHandle(handle).leaf
+      const ptyId = livePty?.pty.ptyId ?? leaf?.ptyId
+      const controller = this.ptyController
+      if (
+        !ptyId ||
+        !controller ||
+        (livePty && !livePty.pty.connected) ||
+        (!livePty && getTerminalState(leaf!) !== 'running')
+      ) {
+        return null
+      }
+      const leafTitle = leaf ? getLatestLeafTitle(leaf, null) : null
+      const leafTitleClassification = classifyAgentTitle(leafTitle)
+      const managementTitleClassification = livePty
+        ? classifyLatestAgentTitle({
+            title: livePty.pty.managementTitle,
+            updatedAt: livePty.pty.managementTitleAt
+          })
+        : 'neutral'
+      const shouldSuppressClaudeForeground = livePty
+        ? leafTitle !== null
+          ? leafTitleClassification === 'management'
+          : managementTitleClassification === 'management'
+        : leafTitleClassification === 'management' ||
+          (leafTitle === null &&
+            classifyAgentTitle(this.tabs.get(leaf!.tabId)?.title?.trim() || null) === 'management')
+      const recognized = recognizeAgentProcess(await controller.getForegroundProcess(ptyId))
+      this.assertLiveTerminalHandleTargetsPty(handle, ptyId)
+      if (controller !== this.ptyController || !recognized) {
+        return null
+      }
+      if (shouldSuppressClaudeForeground && recognized.agent === 'claude') {
+        return null
+      }
+      return recognized.agent
+    } catch {
+      return null
+    }
+  }
+
   async isTerminalRunningSettledPromptAgent(handle: string): Promise<boolean> {
     try {
       const livePty = this.getLivePtyForHandle(handle)
@@ -36450,6 +36493,7 @@ export class OrcaRuntimeService {
           leaf.lastAgentStatus === null &&
           leaf.ptyId &&
           this.ptyController &&
+          this.canResolveTuiIdleEvidence(leaf.ptyId, leafWaitText, leaf.lastOutputAt) &&
           !foregroundPollInFlight
         ) {
           foregroundPollInFlight = true
@@ -36533,7 +36577,12 @@ export class OrcaRuntimeService {
           this.resolveWaiter(waiter, buildPtyTerminalWaitResult(waiter.handle, 'tui-idle', pty))
           return
         }
-        if (pty.lastAgentStatus === null && this.ptyController && !foregroundPollInFlight) {
+        if (
+          pty.lastAgentStatus === null &&
+          this.ptyController &&
+          this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.lastOutputAt) &&
+          !foregroundPollInFlight
+        ) {
           foregroundPollInFlight = true
           startedForegroundPoll = true
           const fg = await this.ptyController.getForegroundProcess(pty.ptyId)
