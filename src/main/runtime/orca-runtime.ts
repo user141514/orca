@@ -35660,8 +35660,15 @@ export class OrcaRuntimeService {
         : leafTitleClassification === 'management' ||
           (leafTitle === null &&
             classifyAgentTitle(this.tabs.get(leaf!.tabId)?.title?.trim() || null) === 'management')
-      const recognized = recognizeAgentProcess(await controller.getForegroundProcess(ptyId))
+      let recognized = recognizeAgentProcess(await controller.getForegroundProcess(ptyId))
       this.assertLiveTerminalHandleTargetsPty(handle, ptyId)
+      if (controller !== this.ptyController) {
+        return null
+      }
+      if (!recognized && controller.confirmForegroundProcess) {
+        recognized = recognizeAgentProcess(await controller.confirmForegroundProcess(ptyId))
+        this.assertLiveTerminalHandleTargetsPty(handle, ptyId)
+      }
       if (controller !== this.ptyController || !recognized) {
         return null
       }

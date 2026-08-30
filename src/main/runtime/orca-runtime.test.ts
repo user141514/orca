@@ -24694,6 +24694,22 @@ describe('OrcaRuntimeService', () => {
     await expect(runtime.getTerminalRunningTuiAgent(terminal.handle)).resolves.toBe('codex')
   })
 
+  it('confirms a cold Windows shell foreground before identifying a reused agent', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const confirmForegroundProcess = vi.fn().mockResolvedValue('codex')
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => 'powershell.exe',
+      confirmForegroundProcess
+    })
+    syncSinglePty(runtime, 'pty-1', { paneTitle: 'bash' })
+    const [terminal] = (await runtime.listTerminals()).terminals
+
+    await expect(runtime.getTerminalRunningTuiAgent(terminal.handle)).resolves.toBe('codex')
+    expect(confirmForegroundProcess).toHaveBeenCalledWith('pty-1')
+  })
+
   it('fails closed when a reused terminal foreground process is unrecognized', async () => {
     const runtime = new OrcaRuntimeService(store)
     runtime.setPtyController({
