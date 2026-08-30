@@ -16847,6 +16847,80 @@ describe('OrcaRuntimeService', () => {
     }
   })
 
+  it('does not resolve tui-idle from an early Codex idle title during MCP startup', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      spawn: vi.fn().mockResolvedValue({ id: 'pty-bg' }),
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+    const { handle } = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+      launchAgent: 'codex'
+    })
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-bg',
+          worktreeId: TEST_WORKTREE_ID,
+          title: 'Codex done',
+          activeLeafId: 'pane-bg',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-bg',
+          worktreeId: TEST_WORKTREE_ID,
+          leafId: 'pane-bg',
+          paneRuntimeId: 1,
+          ptyId: 'pty-bg',
+          paneTitle: 'Codex done'
+        }
+      ]
+    })
+    runtime.onPtyData('pty-bg', 'Booting MCP server: computer-use\n', Date.now())
+    const pty = (
+      runtime as unknown as {
+        ptyLifecycleGenerationById: Map<string, number>
+        ptysById: Map<
+          string,
+          {
+            launchAgent: string | null
+            lastAgentStatus: string | null
+            lastOutputAt: number | null
+            preview: string
+            tailBuffer: string[]
+            tailPartialLine: string
+          }
+        >
+      }
+    )
+    pty.ptyLifecycleGenerationById.set('pty-bg', 1)
+    const ptyRecord = pty.ptysById.get('pty-bg')
+    expect(ptyRecord).toBeDefined()
+    ptyRecord!.launchAgent = 'codex'
+    ptyRecord!.lastAgentStatus = 'idle'
+    ptyRecord!.tailBuffer = []
+    ptyRecord!.tailPartialLine = 'Booting MCP server: computer-use'
+    ptyRecord!.preview = 'Booting MCP server: computer-use'
+    ptyRecord!.lastOutputAt = Date.now()
+
+    const abort = new AbortController()
+    const wait = runtime.waitForTerminal(handle, { condition: 'tui-idle', signal: abort.signal })
+    let settled = false
+    void wait
+      .then(() => {
+        settled = true
+      })
+      .catch(() => {})
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    abort.abort()
+    await expect(wait).rejects.toThrow('request_aborted')
+  })
+
   it('resolves tui-idle from a Codex ready prompt preview', async () => {
     vi.useFakeTimers()
     const runtime = new OrcaRuntimeService(store)

@@ -20191,6 +20191,31 @@ export class OrcaRuntimeService {
     return isSettledReadyPromptPreview(waitText, lastOutputAt)
   }
 
+  private canResolveTuiIdleEvidence(
+    ptyId: string | null,
+    waitText: string,
+    lastOutputAt: number | null
+  ): boolean {
+    const hasCodexPrompt = findCodexReadyPromptIndex(waitText.toLowerCase()) !== null
+    if (!ptyId) {
+      return !hasCodexPrompt || isSettledReadyPromptPreview(waitText, lastOutputAt)
+    }
+    const pty = this.ptysById.get(ptyId)
+    const isCodex =
+      this.getPtyAgent(ptyId) === 'codex' ||
+      hasCodexPrompt ||
+      pty?.lastOscTitle?.toLowerCase().includes('codex') === true
+    if (!isCodex) {
+      return true
+    }
+    const acceptedGeneration = this.agentPromptAcceptedGenerationByPtyId.get(ptyId)
+    return (
+      (acceptedGeneration !== undefined &&
+        acceptedGeneration === this.getPtyLifecycleGeneration(ptyId)) ||
+      isSettledReadyPromptPreview(waitText, lastOutputAt)
+    )
+  }
+
   private recordAgentPromptTerminalEvidence(ptyId: string, text: string): void {
     const carry = this.agentPromptTerminalEvidenceCarryByPtyId.get(ptyId) ?? ''
     const combined = `${carry}${text}`
@@ -20367,13 +20392,18 @@ export class OrcaRuntimeService {
       if (condition === 'tui-idle' && ptyBlockedReason) {
         return buildPtyTerminalWaitBlockedResult(handle, condition, pty.pty, ptyBlockedReason)
       }
-      if (condition === 'tui-idle' && pty.pty.lastAgentStatus === 'idle') {
+      if (
+        condition === 'tui-idle' &&
+        pty.pty.lastAgentStatus === 'idle' &&
+        this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)
+      ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
       if (
         condition === 'tui-idle' &&
         (this.getAdoptedPtyExplicitIdleStatus(pty.pty) === 'idle' ||
-          this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt))
+          this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)) &&
+        this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.pty.lastOutputAt)
       ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
@@ -20427,15 +20457,23 @@ export class OrcaRuntimeService {
               waiter,
               buildPtyTerminalWaitBlockedResult(handle, condition, live.pty, blockedReason)
             )
-          } else if (live.pty.lastAgentStatus === 'idle') {
-            this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else if (
-            this.getAdoptedPtyExplicitIdleStatus(live.pty) === 'idle' ||
-            this.canResolveTuiIdlePromptPreview(
+            live.pty.lastAgentStatus === 'idle' &&
+            this.canResolveTuiIdleEvidence(
               live.pty.ptyId,
               livePtyWaitText,
               live.pty.lastOutputAt
             )
+          ) {
+            this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
+          } else if (
+            (this.getAdoptedPtyExplicitIdleStatus(live.pty) === 'idle' ||
+              this.canResolveTuiIdlePromptPreview(
+                live.pty.ptyId,
+                livePtyWaitText,
+                live.pty.lastOutputAt
+              )) &&
+            this.canResolveTuiIdleEvidence(live.pty.ptyId, livePtyWaitText, live.pty.lastOutputAt)
           ) {
             this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else {
@@ -20461,14 +20499,19 @@ export class OrcaRuntimeService {
     // detection that powers the renderer's "Task complete" notifications.
     // Why: only 'idle' satisfies tui-idle, not 'permission'. Permission means the
     // agent is blocked on user approval, not finished with its task.
-    if (condition === 'tui-idle' && leaf.lastAgentStatus === 'idle') {
+    if (
+      condition === 'tui-idle' &&
+      leaf.lastAgentStatus === 'idle' &&
+      this.canResolveTuiIdleEvidence(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
+    ) {
       return buildTerminalWaitResult(handle, condition, leaf)
     }
     if (condition === 'tui-idle') {
       const fastPathTitle = leaf.paneTitle ?? this.tabs.get(leaf.tabId)?.title
       if (
-        (fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
-        this.canResolveTuiIdlePromptPreview(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
+        ((fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
+          this.canResolveTuiIdlePromptPreview(leaf.ptyId, leafWaitText, leaf.lastOutputAt)) &&
+        this.canResolveTuiIdleEvidence(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
       ) {
         return buildTerminalWaitResult(handle, condition, leaf)
       }
@@ -20533,7 +20576,14 @@ export class OrcaRuntimeService {
               waiter,
               buildTerminalWaitBlockedResult(handle, condition, live.leaf, blockedReason)
             )
-          } else if (live.leaf.lastAgentStatus === 'idle') {
+          } else if (
+            live.leaf.lastAgentStatus === 'idle' &&
+            this.canResolveTuiIdleEvidence(
+              live.leaf.ptyId,
+              liveLeafWaitText,
+              live.leaf.lastOutputAt
+            )
+          ) {
             // Why: don't clear lastAgentStatus here. It's a factual record of the
             // last detected OSC state, not a one-shot signal. Clearing it causes
             // subsequent tui-idle waiters to hang even though the agent is idle —
@@ -20545,8 +20595,13 @@ export class OrcaRuntimeService {
             // preview/title until the waiter resolves or hits its timeout.
             const fastPathTitle = live.leaf.paneTitle ?? this.tabs.get(live.leaf.tabId)?.title
             if (
-              (fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
-              this.canResolveTuiIdlePromptPreview(
+              ((fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
+                this.canResolveTuiIdlePromptPreview(
+                  live.leaf.ptyId,
+                  liveLeafWaitText,
+                  live.leaf.lastOutputAt
+                )) &&
+              this.canResolveTuiIdleEvidence(
                 live.leaf.ptyId,
                 liveLeafWaitText,
                 live.leaf.lastOutputAt
@@ -36253,7 +36308,11 @@ export class OrcaRuntimeService {
       return
     }
     for (const waiter of [...waiters]) {
-      if (waiter.condition === 'tui-idle') {
+      const waitText = buildTerminalWaitText(leaf.tailBuffer, leaf.tailPartialLine, leaf.preview)
+      if (
+        waiter.condition === 'tui-idle' &&
+        this.canResolveTuiIdleEvidence(leaf.ptyId, waitText, leaf.lastOutputAt)
+      ) {
         this.resolveWaiter(waiter, buildTerminalWaitResult(handle, 'tui-idle', leaf))
       }
     }
@@ -36308,7 +36367,11 @@ export class OrcaRuntimeService {
       return
     }
     for (const waiter of [...waiters]) {
-      if (waiter.condition === 'tui-idle') {
+      const waitText = buildTerminalWaitText(pty.tailBuffer, pty.tailPartialLine, pty.preview)
+      if (
+        waiter.condition === 'tui-idle' &&
+        this.canResolveTuiIdleEvidence(pty.ptyId, waitText, pty.lastOutputAt)
+      ) {
         this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, 'tui-idle', pty))
       }
     }
@@ -36327,7 +36390,15 @@ export class OrcaRuntimeService {
       }
       let startedForegroundPoll = false
       try {
-        if (leaf.lastAgentStatus === 'idle') {
+        const leafWaitText = buildTerminalWaitText(
+          leaf.tailBuffer,
+          leaf.tailPartialLine,
+          leaf.preview
+        )
+        if (
+          leaf.lastAgentStatus === 'idle' &&
+          this.canResolveTuiIdleEvidence(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
+        ) {
           if (waiter.pollInterval) {
             clearInterval(waiter.pollInterval)
             waiter.pollInterval = null
@@ -36339,7 +36410,10 @@ export class OrcaRuntimeService {
         const pollTitle = leaf.paneTitle ?? this.tabs.get(leaf.tabId)?.title
         if (pollTitle) {
           const titleStatus = detectExplicitIdleStatusFromTitle(pollTitle)
-          if (titleStatus === 'idle') {
+          if (
+            titleStatus === 'idle' &&
+            this.canResolveTuiIdleEvidence(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
+          ) {
             if (waiter.pollInterval) {
               clearInterval(waiter.pollInterval)
               waiter.pollInterval = null
@@ -36348,11 +36422,6 @@ export class OrcaRuntimeService {
             return
           }
         }
-        const leafWaitText = buildTerminalWaitText(
-          leaf.tailBuffer,
-          leaf.tailPartialLine,
-          leaf.preview
-        )
         const blockedReason = detectTerminalWaitBlockedReason(leafWaitText)
         if (blockedReason) {
           if (waiter.pollInterval) {
@@ -36366,7 +36435,8 @@ export class OrcaRuntimeService {
           return
         }
         if (
-          this.canResolveTuiIdlePromptPreview(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
+          this.canResolveTuiIdlePromptPreview(leaf.ptyId, leafWaitText, leaf.lastOutputAt) &&
+          this.canResolveTuiIdleEvidence(leaf.ptyId, leafWaitText, leaf.lastOutputAt)
         ) {
           if (waiter.pollInterval) {
             clearInterval(waiter.pollInterval)
@@ -36426,7 +36496,11 @@ export class OrcaRuntimeService {
       }
       let startedForegroundPoll = false
       try {
-        if (pty.lastAgentStatus === 'idle') {
+        const ptyWaitText = buildTerminalWaitText(pty.tailBuffer, pty.tailPartialLine, pty.preview)
+        if (
+          pty.lastAgentStatus === 'idle' &&
+          this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.lastOutputAt)
+        ) {
           if (waiter.pollInterval) {
             clearInterval(waiter.pollInterval)
             waiter.pollInterval = null
@@ -36434,7 +36508,6 @@ export class OrcaRuntimeService {
           this.resolveWaiter(waiter, buildPtyTerminalWaitResult(waiter.handle, 'tui-idle', pty))
           return
         }
-        const ptyWaitText = buildTerminalWaitText(pty.tailBuffer, pty.tailPartialLine, pty.preview)
         const blockedReason = detectTerminalWaitBlockedReason(ptyWaitText)
         if (blockedReason) {
           if (waiter.pollInterval) {
@@ -36449,8 +36522,9 @@ export class OrcaRuntimeService {
         }
         // Why: adopted background PTY handles use their live xterm title as the same readiness signal as leaf handles.
         if (
-          this.getAdoptedPtyExplicitIdleStatus(pty) === 'idle' ||
-          this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.lastOutputAt)
+          (this.getAdoptedPtyExplicitIdleStatus(pty) === 'idle' ||
+            this.canResolveTuiIdlePromptPreview(pty.ptyId, ptyWaitText, pty.lastOutputAt)) &&
+          this.canResolveTuiIdleEvidence(pty.ptyId, ptyWaitText, pty.lastOutputAt)
         ) {
           if (waiter.pollInterval) {
             clearInterval(waiter.pollInterval)
