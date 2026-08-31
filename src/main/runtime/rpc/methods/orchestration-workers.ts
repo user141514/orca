@@ -1,5 +1,4 @@
 import type { TuiAgent } from '../../../../shared/tui-agent'
-import { isAgentPromptStalledError } from '../../agent-prompt-submission-verification'
 import { buildCollaborationWorkerProtocolForTask } from '../../collaboration/collaboration-worker-protocol'
 import { getCollaborationRuntimeTopology } from '../../collaboration/collaboration-runtime-registry'
 import { buildDispatchPreamble } from '../../orchestration/preamble'
@@ -249,13 +248,7 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           cliCommand,
           preCompletionProtocol
         })
-        try {
-          await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
-        } catch (error) {
-          if (agent !== 'codex' || !isAgentPromptStalledError(error)) { throw error }
-          if (!(await runtime.waitForTerminal(terminalHandle, { condition: 'tui-idle', timeoutMs: 30_000 })).satisfied) { throw error }
-          await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
-        }
+        await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
         effects.push({
           kind: 'dispatch_input',
           role: 'agent',

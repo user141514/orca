@@ -163,51 +163,43 @@ describe('orchestration RPC methods', () => {
       )
     })
 
-    it('retries a stalled Codex dispatch after its terminal returns to idle', async () => {
+    it('does not retry a stalled Codex dispatch after submission became indeterminate', async () => {
       setup()
       mockCurrentWorkerStart()
-      vi.mocked(runtime.sendTerminalAgentPrompt)
-        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
-        .mockResolvedValueOnce({ handle: 'term_worker', accepted: true, bytesWritten: 1 })
-      const task = db.createTask({ spec: 'retry a swallowed Codex prompt' })
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        new Error('agent_prompt_stalled')
+      )
+      const task = db.createTask({ spec: 'preserve an indeterminate Codex prompt' })
 
       const result = (await call('orchestration.workerStart', {
         task: task.id,
         from: 'term_coord',
         agent: 'codex'
-      })) as { state: string }
+      })) as { state: string; lastError: string }
 
-      expect(result).toMatchObject({ state: 'ready' })
-      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(2)
-      expect(runtime.waitForTerminal).toHaveBeenLastCalledWith('term_worker', {
-        condition: 'tui-idle',
-        timeoutMs: 30_000
-      })
-      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+      expect(result).toMatchObject({ state: 'failed', lastError: 'agent_prompt_stalled' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(1)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
     })
 
-    it('retries a stalled reused Codex terminal after it returns to idle', async () => {
+    it('does not retry a stalled reused Codex terminal after submission became indeterminate', async () => {
       setup()
       mockCurrentWorkerStart()
       vi.spyOn(runtime, 'getTerminalRunningTuiAgent').mockResolvedValue('codex')
-      vi.mocked(runtime.sendTerminalAgentPrompt)
-        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
-        .mockResolvedValueOnce({ handle: 'term_worker', accepted: true, bytesWritten: 1 })
-      const task = db.createTask({ spec: 'retry a reused Codex prompt' })
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        new Error('agent_prompt_stalled')
+      )
+      const task = db.createTask({ spec: 'preserve an indeterminate reused Codex prompt' })
 
       const result = (await call('orchestration.workerStart', {
         task: task.id,
         from: 'term_coord',
         terminal: 'term_worker'
-      })) as { state: string }
+      })) as { state: string; lastError: string }
 
-      expect(result).toMatchObject({ state: 'ready' })
-      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(2)
-      expect(runtime.waitForTerminal).toHaveBeenLastCalledWith('term_worker', {
-        condition: 'tui-idle',
-        timeoutMs: 30_000
-      })
-      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+      expect(result).toMatchObject({ state: 'failed', lastError: 'agent_prompt_stalled' })
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(1)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
     })
 
     it('does not retry a stalled non-Codex dispatch', async () => {
@@ -268,13 +260,13 @@ describe('orchestration RPC methods', () => {
       expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
     })
 
-    it('returns the second stalled Codex dispatch failure', async () => {
+    it('does not wait for a retry opportunity after a stalled Codex submission', async () => {
       setup()
       mockCurrentWorkerStart()
-      vi.mocked(runtime.sendTerminalAgentPrompt)
-        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
-        .mockRejectedValueOnce(new Error('agent_prompt_stalled'))
-      const task = db.createTask({ spec: 'report a repeated stalled Codex prompt' })
+      vi.mocked(runtime.sendTerminalAgentPrompt).mockRejectedValueOnce(
+        new Error('agent_prompt_stalled')
+      )
+      const task = db.createTask({ spec: 'do not replay an indeterminate Codex prompt' })
 
       const result = (await call('orchestration.workerStart', {
         task: task.id,
@@ -283,8 +275,8 @@ describe('orchestration RPC methods', () => {
       })) as { state: string; lastError: string }
 
       expect(result).toMatchObject({ state: 'failed', lastError: 'agent_prompt_stalled' })
-      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(2)
-      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(2)
+      expect(runtime.waitForTerminal).toHaveBeenCalledTimes(1)
+      expect(runtime.sendTerminalAgentPrompt).toHaveBeenCalledTimes(1)
     })
 
     it('applies and reports opaque per-invocation model preferences', async () => {
