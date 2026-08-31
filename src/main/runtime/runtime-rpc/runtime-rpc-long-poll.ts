@@ -20,6 +20,10 @@ export type RuntimeLongPollClass = 'ask' | 'browser-host' | 'wait'
 
 // Why: single classifier for long-poll requests (handlers that block on an external event), shared by counter/abort/keepalive. See §3.1.
 export function classifyRuntimeLongPoll(request: RpcRequest): RuntimeLongPollClass | null {
+  // Mission planning/repair can run for 60s; keep the local transport alive while it produces the plan.
+  if (request.method === 'mission.plan') {
+    return 'wait'
+  }
   // Worker start waits for readiness and then verifies the submitted prompt;
   // the complete operation can run for 90–110s. Keep every local transport
   // (Unix sockets and Windows named pipes) alive for that long poll.
