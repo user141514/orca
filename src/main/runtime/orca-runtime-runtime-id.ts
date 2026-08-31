@@ -281,6 +281,10 @@ export class OrcaRuntimeWithRuntimeId {
     getTabTitle: (tabId) => this.tabs.get(tabId)?.title ?? null,
     getForegroundProcess: (ptyId) => this.ptyController?.getForegroundProcess(ptyId) ?? null,
     getAdoptedPtyIdleStatus: (pty) => this.getAdoptedPtyExplicitIdleStatus(pty),
+    canResolveTuiIdlePromptPreview: (ptyId, waitText, lastOutputAt) =>
+      this.canResolveTuiIdlePromptPreview(ptyId, waitText, lastOutputAt),
+    canResolveTuiIdleEvidence: (ptyId, waitText, lastOutputAt) =>
+      this.canResolveTuiIdleEvidence(ptyId, waitText, lastOutputAt),
     resolve: (waiter, result) => this.terminalWaiters.resolve(waiter, result)
   })
 
@@ -291,6 +295,10 @@ export class OrcaRuntimeWithRuntimeId {
       getLiveLeaf: (handle) => this.getLiveLeafForHandle(handle),
       getAdoptedPtyIdleStatus: (pty) => this.getAdoptedPtyExplicitIdleStatus(pty),
       getTabTitle: (tabId) => this.tabs.get(tabId)?.title ?? null,
+      canResolveTuiIdlePromptPreview: (ptyId, waitText, lastOutputAt) =>
+        this.canResolveTuiIdlePromptPreview(ptyId, waitText, lastOutputAt),
+      canResolveTuiIdleEvidence: (ptyId, waitText, lastOutputAt) =>
+        this.canResolveTuiIdleEvidence(ptyId, waitText, lastOutputAt),
       startVisibleReadProbe: (waiter, waiterTimeoutMs) =>
         this.startTuiIdleVisibleReadProbe(waiter, waiterTimeoutMs)
     },

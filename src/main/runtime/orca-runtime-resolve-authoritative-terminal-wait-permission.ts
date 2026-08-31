@@ -3,7 +3,13 @@ import { OrcaRuntimeWithSerializeAgentPromptSubmission } from './orca-runtime-se
 import type { RuntimeTerminalAgentStatusSnapshot } from './runtime-terminal-agent-status-query'
 import type { AgentStatus } from '../../shared/agent-detection'
 import type { RuntimeTerminalWaitBlockedReason } from '../../shared/runtime-types'
-import { detectTerminalWaitBlockedReason } from './terminal-wait-detection'
+import {
+  detectTerminalWaitBlockedReason,
+  findCodexReadyPromptIndex,
+  isKnownReadyPromptPreview,
+  isSettledReadyPromptPreview
+} from './terminal-wait-detection'
+import { TUI_IDLE_QUIESCENCE_MS } from './orca-runtime-postlude'
 import { isOpenCodeNativeTitle } from '../../shared/agent-detection'
 import type { AgentStatusEntry } from '../../shared/agent-status-types'
 import type { RuntimePtyWorktreeRecord } from './runtime-terminal-state-records'
@@ -15,6 +21,9 @@ import { splitWorktreeIdForFilesystem } from '../../shared/worktree/id'
 import { isWindowsAbsolutePathLike } from '../../shared/cross-platform-path'
 import type { TuiAgent } from '../../shared/tui-agent'
 import type { AgentPromptActivity } from './agent-prompt-submission-verification'
+
+const AGENT_PROMPT_TERMINAL_EVIDENCE_CARRY_CHARS = 256
+const CODEX_TERMINAL_WORKING_INDICATOR = /\bWorking\s*\([^)]{0,160}\besc to interrupt\b/i
 
 export class OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission extends OrcaRuntimeWithSerializeAgentPromptSubmission {
   protected resolveAuthoritativeTerminalWaitPermission(
@@ -100,6 +109,67 @@ export class OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission extends O
   protected getPtyAgent(ptyId: string): TuiAgent | null {
     const pty = this.ptysById.get(ptyId)
     return pty?.launchAgent ?? pty?.foregroundAgent ?? null
+  }
+
+  protected canResolveTuiIdlePromptPreview(
+    ptyId: string | null,
+    waitText: string,
+    lastOutputAt: number | null
+  ): boolean {
+    if (!ptyId || this.getPtyAgent(ptyId) !== 'codex') {
+      return isKnownReadyPromptPreview(waitText)
+    }
+    if (
+      this.agentPromptAcceptedGenerationByPtyId.get(ptyId) === this.getPtyLifecycleGeneration(ptyId)
+    ) {
+      return true
+    }
+    return isSettledReadyPromptPreview(waitText, lastOutputAt, TUI_IDLE_QUIESCENCE_MS)
+  }
+
+  protected canResolveTuiIdleEvidence(
+    ptyId: string | null,
+    waitText: string,
+    lastOutputAt: number | null
+  ): boolean {
+    const hasCodexPrompt = findCodexReadyPromptIndex(waitText.toLowerCase()) !== null
+    if (!ptyId) {
+      return (
+        !hasCodexPrompt ||
+        isSettledReadyPromptPreview(waitText, lastOutputAt, TUI_IDLE_QUIESCENCE_MS)
+      )
+    }
+    const pty = this.ptysById.get(ptyId)
+    const isCodex =
+      this.getPtyAgent(ptyId) === 'codex' ||
+      hasCodexPrompt ||
+      pty?.lastOscTitle?.toLowerCase().includes('codex') === true
+    if (!isCodex) {
+      return true
+    }
+    const acceptedGeneration = this.agentPromptAcceptedGenerationByPtyId.get(ptyId)
+    return (
+      (acceptedGeneration !== undefined &&
+        acceptedGeneration === this.getPtyLifecycleGeneration(ptyId)) ||
+      isSettledReadyPromptPreview(waitText, lastOutputAt, TUI_IDLE_QUIESCENCE_MS)
+    )
+  }
+
+  protected recordAgentPromptTerminalEvidence(ptyId: string, text: string): void {
+    const carry = this.agentPromptTerminalEvidenceCarryByPtyId.get(ptyId) ?? ''
+    const combined = `${carry}${text}`
+    const marker = CODEX_TERMINAL_WORKING_INDICATOR.exec(combined)
+    CODEX_TERMINAL_WORKING_INDICATOR.lastIndex = 0
+    if (marker && marker.index + marker[0].length > carry.length) {
+      this.agentPromptTerminalWorkingSequenceByPtyId.set(
+        ptyId,
+        (this.agentPromptTerminalWorkingSequenceByPtyId.get(ptyId) ?? 0) + 1
+      )
+    }
+    this.agentPromptTerminalEvidenceCarryByPtyId.set(
+      ptyId,
+      combined.slice(-AGENT_PROMPT_TERMINAL_EVIDENCE_CARRY_CHARS)
+    )
   }
 
   protected assertAgentPromptPermissionSafe(

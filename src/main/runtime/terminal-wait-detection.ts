@@ -43,6 +43,18 @@ export function isKnownReadyPromptPreview(preview: string): boolean {
   return true
 }
 
+export function isSettledReadyPromptPreview(
+  preview: string,
+  lastOutputAt: number | null,
+  quiescenceMs: number
+): boolean {
+  return (
+    isKnownReadyPromptPreview(preview) &&
+    lastOutputAt !== null &&
+    Date.now() - lastOutputAt >= quiescenceMs
+  )
+}
+
 export function detectTerminalWaitBlockedReason(
   preview: string
 ): RuntimeTerminalWaitBlockedReason | null {
@@ -103,7 +115,7 @@ function findCursorReadyPromptIndex(normalized: string): number | null {
   return CURSOR_BUSY_SPINNER_RE.test(normalized.slice(activeIndex)) ? null : activeIndex
 }
 
-function findCodexReadyPromptIndex(normalized: string): number | null {
+export function findCodexReadyPromptIndex(normalized: string): number | null {
   const headerIndex = normalized.lastIndexOf('openai codex')
   if (headerIndex === -1) {
     return null
