@@ -13,12 +13,17 @@ import {
   SERVE_REPLACEMENT_READY_TIMEOUT_MS
 } from './serve-update-supervisor'
 
-const { spawnMock } = vi.hoisted(() => ({
-  spawnMock: vi.fn()
+const { spawnMock, spawnManagedMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  spawnManagedMock: vi.fn()
 }))
 
 vi.mock('child_process', () => ({
   spawn: spawnMock
+}))
+
+vi.mock('../../shared/child-process/run-process', () => ({
+  spawnProcess: spawnManagedMock
 }))
 
 import { launchOrcaApp, serveOrcaApp } from './launch'
@@ -599,18 +604,130 @@ describe('serveOrcaApp', () => {
 describe('launchOrcaApp', () => {
   beforeEach(() => {
     spawnMock.mockReset()
+    spawnManagedMock.mockReset()
   })
 
   afterEach(() => {
     delete process.env.ORCA_OPEN_COMMAND
     delete process.env.ORCA_APP_EXECUTABLE
     delete process.env.ORCA_APP_EXECUTABLE_NEEDS_APP_ROOT
+    delete process.env.ORCA_USER_DATA_PATH
+    delete process.env.ORCA_DEV_USER_DATA_PATH
+    delete process.env.ELECTRON_RUN_AS_NODE
+  })
+
+  it('launches the requested profile while preserving the dev app root argument', () => {
+    process.env.ORCA_APP_EXECUTABLE = 'C:\\Program Files\\Orca\\Orca.exe'
+    process.env.ORCA_APP_EXECUTABLE_NEEDS_APP_ROOT = '1'
+    process.env.ORCA_USER_DATA_PATH = 'C:\\stale-profile'
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+    const child = new FakeChildProcess()
+    spawnManagedMock.mockReturnValue(child)
+
+    launchOrcaApp('C:\\requested-profile')
+
+    expect(spawnManagedMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        program: 'C:\\Program Files\\Orca\\Orca.exe',
+        args: [resolve(__dirname, '../../..'), '--user-data-dir=C:\\requested-profile'],
+        detached: true,
+        stdio: 'ignore',
+        env: expect.objectContaining({
+          ORCA_USER_DATA_PATH: 'C:\\requested-profile',
+          ORCA_DEV_USER_DATA_PATH: 'C:\\requested-profile'
+        })
+      })
+    )
+    expect(spawnManagedMock.mock.calls[0]?.[0]?.env).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
+  })
+
+  it('refuses an opaque shell override that cannot carry the selected profile', () => {
+    process.env.ORCA_OPEN_COMMAND = 'orca-open | tee launch.log'
+
+    expect(() => launchOrcaApp('C:\\requested-profile')).toThrow(
+      'ORCA_OPEN_COMMAND cannot launch a specific Orca profile'
+    )
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(spawnManagedMock).not.toHaveBeenCalled()
+  })
+
+  it('passes a Windows command shim an intact profile path through the safe launcher', () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    process.env.ORCA_APP_EXECUTABLE = 'C:\\repo\\node_modules\\.bin\\electron.cmd'
+    process.env.ORCA_DEV_USER_DATA_PATH = 'C:\\stale dev profile'
+    const child = new FakeChildProcess()
+    spawnManagedMock.mockReturnValue(child)
+
+    try {
+      launchOrcaApp('C:\\profiles\\project space & trusted')
+
+      expect(spawnManagedMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          program: 'C:\\repo\\node_modules\\.bin\\electron.cmd',
+          args: ['--user-data-dir=C:\\profiles\\project space & trusted'],
+          detached: true,
+          stdio: 'ignore',
+          env: expect.objectContaining({
+            ORCA_USER_DATA_PATH: 'C:\\profiles\\project space & trusted',
+            ORCA_DEV_USER_DATA_PATH: 'C:\\profiles\\project space & trusted'
+          })
+        })
+      )
+      expect(spawnMock).not.toHaveBeenCalled()
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+    }
+  })
+
+  it('passes the requested profile through macOS open arguments', () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    Object.defineProperty(process, 'execPath', {
+      value: '/Applications/Orca.app/Contents/MacOS/Orca'
+    })
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+    const child = new FakeChildProcess()
+    spawnManagedMock.mockReturnValue(child)
+
+    try {
+      launchOrcaApp('/Users/orca-profile')
+
+      expect(spawnManagedMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          program: 'open',
+          args: [
+            '-n',
+            '-a',
+            '/Applications/Orca.app',
+            '--args',
+            '--user-data-dir=/Users/orca-profile'
+          ],
+          detached: true,
+          stdio: 'ignore',
+          env: expect.objectContaining({
+            ORCA_USER_DATA_PATH: '/Users/orca-profile',
+            ORCA_DEV_USER_DATA_PATH: '/Users/orca-profile'
+          })
+        })
+      )
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+      if (execPathDescriptor) {
+        Object.defineProperty(process, 'execPath', execPathDescriptor)
+      }
+    }
   })
 
   it('handles asynchronous detached spawn errors without throwing', async () => {
     process.env.ORCA_APP_EXECUTABLE = '/missing/Orca'
     const child = new FakeChildProcess()
-    spawnMock.mockReturnValue(child)
+    spawnManagedMock.mockReturnValue(child)
 
     launchOrcaApp()
     child.emit('error', new Error('ENOENT'))

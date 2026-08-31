@@ -2,6 +2,10 @@ import { spawn as spawnProcess, type SpawnOptions } from 'node:child_process'
 import { resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import {
+  spawnProcess as spawnManagedProcess,
+  type ProcessSpec
+} from '../../shared/child-process/run-process'
+import {
   SERVE_UPDATE_HANDOFF_PATH_ENV,
   getServeUpdateHandoffPath
 } from '../../shared/serve-update-handoff'
@@ -20,18 +24,19 @@ import { RuntimeClientError } from './types'
 
 const IGNORED_NON_RECIPE_STDOUT = '[serve] ignored non-recipe stdout'
 
-export function launchOrcaApp(): void {
+export function launchOrcaApp(userDataPath = getDefaultUserDataPath()): void {
   const overrideCommand = process.env.ORCA_OPEN_COMMAND
   if (typeof overrideCommand === 'string' && overrideCommand.trim().length > 0) {
-    spawnDetached(overrideCommand, [], { shell: true })
-    return
+    throw new RuntimeClientError(
+      'runtime_open_failed',
+      'ORCA_OPEN_COMMAND cannot launch a specific Orca profile. Set ORCA_APP_EXECUTABLE to an Orca executable instead.'
+    )
   }
 
   const overrideExecutable = process.env.ORCA_APP_EXECUTABLE
   if (typeof overrideExecutable === 'string' && overrideExecutable.trim().length > 0) {
-    spawnDetached(overrideExecutable, getExecutableAppArgs(), {
-      ...getExecutableSpawnOptions(overrideExecutable),
-      env: stripElectronRunAsNode(process.env)
+    spawnDetached(overrideExecutable, getLaunchAppArgs(userDataPath), {
+      env: getLaunchEnv(userDataPath)
     })
     return
   }
@@ -43,15 +48,19 @@ export function launchOrcaApp(): void {
         // Why: launching the inner MacOS binary directly can trigger macOS app
         // launch failures and bypass normal bundle lifecycle. The public
         // packaged CLI should re-open the .app the same way Finder does.
-        spawnDetached('open', [appBundlePath], {
-          env: stripElectronRunAsNode(process.env)
-        })
+        spawnDetached(
+          'open',
+          ['-n', '-a', appBundlePath, '--args', ...getUserDataDirArg(userDataPath)],
+          {
+            env: getLaunchEnv(userDataPath)
+          }
+        )
         return
       }
     }
 
-    spawnDetached(process.execPath, [], {
-      env: stripElectronRunAsNode(process.env)
+    spawnDetached(process.execPath, getUserDataDirArg(userDataPath), {
+      env: getLaunchEnv(userDataPath)
     })
     return
   }
@@ -62,8 +71,10 @@ export function launchOrcaApp(): void {
   )
 }
 
-function spawnDetached(command: string, args: string[], options: SpawnOptions): void {
-  const child = spawnProcess(command, args, {
+function spawnDetached(program: string, args: string[], options: Pick<ProcessSpec, 'env'>): void {
+  const child = spawnManagedProcess({
+    program,
+    args,
     detached: true,
     stdio: 'ignore',
     ...options
@@ -258,6 +269,22 @@ function waitForRecipeJson(child: ReturnType<typeof spawnProcess>): Promise<numb
 
 function getExecutableAppArgs(): string[] {
   return process.env.ORCA_APP_EXECUTABLE_NEEDS_APP_ROOT === '1' ? [resolveAppRoot()] : []
+}
+
+function getLaunchAppArgs(userDataPath: string): string[] {
+  return [...getExecutableAppArgs(), ...getUserDataDirArg(userDataPath)]
+}
+
+function getUserDataDirArg(userDataPath: string): string[] {
+  return [`--user-data-dir=${userDataPath}`]
+}
+
+function getLaunchEnv(userDataPath: string): NodeJS.ProcessEnv {
+  return {
+    ...stripElectronRunAsNode(process.env),
+    ORCA_USER_DATA_PATH: userDataPath,
+    ORCA_DEV_USER_DATA_PATH: userDataPath
+  }
 }
 
 function getExecutableSpawnOptions(executable: string): Pick<SpawnOptions, 'shell'> {
