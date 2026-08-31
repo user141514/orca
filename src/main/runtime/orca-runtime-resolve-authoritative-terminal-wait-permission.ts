@@ -21,6 +21,7 @@ import { splitWorktreeIdForFilesystem } from '../../shared/worktree/id'
 import { isWindowsAbsolutePathLike } from '../../shared/cross-platform-path'
 import type { TuiAgent } from '../../shared/tui-agent'
 import type { AgentPromptActivity } from './agent-prompt-submission-verification'
+import { assertAgentPromptRequestActive, waitForAgentPromptDelay } from './orca-runtime-core'
 
 const AGENT_PROMPT_TERMINAL_EVIDENCE_CARRY_CHARS = 256
 const CODEX_TERMINAL_WORKING_INDICATOR = /\bWorking\s*\([^)]{0,160}\besc to interrupt\b/i
@@ -132,6 +133,9 @@ export class OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission extends O
     waitText: string,
     lastOutputAt: number | null
   ): boolean {
+    if (ptyId && this.getPtyAgent(ptyId) === 'omp') {
+      return this.ompPromptReadinessByPtyId.get(ptyId)?.ready === true
+    }
     const hasCodexPrompt = findCodexReadyPromptIndex(waitText.toLowerCase()) !== null
     if (!ptyId) {
       return (
@@ -153,6 +157,36 @@ export class OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission extends O
         acceptedGeneration === this.getPtyLifecycleGeneration(ptyId)) ||
       isSettledReadyPromptPreview(waitText, lastOutputAt, TUI_IDLE_QUIESCENCE_MS)
     )
+  }
+
+  protected async waitForOmpPromptReadiness(
+    handle: string,
+    ptyId: string,
+    generation: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (this.getPtyAgent(ptyId) !== 'omp') {
+      return
+    }
+    const baseline = this.getAgentPromptActivity(handle, ptyId)
+    const deadline = Date.now() + 60_000
+    while (!this.ompPromptReadinessByPtyId.get(ptyId)?.ready) {
+      assertAgentPromptRequestActive(signal)
+      this.assertAgentPromptGeneration(ptyId, generation)
+      this.assertAgentPromptPermissionSafe(baseline, this.getAgentPromptActivity(handle, ptyId))
+      if (Date.now() >= deadline) {
+        throw new Error('agent_prompt_not_ready')
+      }
+      await waitForAgentPromptDelay(50, signal)
+    }
+    assertAgentPromptRequestActive(signal)
+    this.assertAgentPromptGeneration(ptyId, generation)
+  }
+
+  protected assertOmpPromptReadiness(ptyId: string): void {
+    if (this.getPtyAgent(ptyId) === 'omp' && !this.ompPromptReadinessByPtyId.get(ptyId)?.ready) {
+      throw new Error('agent_prompt_not_ready')
+    }
   }
 
   protected recordAgentPromptTerminalEvidence(ptyId: string, text: string): void {

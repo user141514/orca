@@ -1,4 +1,5 @@
 // @ts-nocheck -- mechanically split from OrcaRuntimeService; behavior is covered by AST equivalence and characterization tests.
+import { createHash } from 'node:crypto'
 import { OrcaRuntimeWithResolveAuthoritativeTerminalWaitPermission } from './orca-runtime-resolve-authoritative-terminal-wait-permission'
 import type { RuntimeTerminalWriteOptions } from './runtime-terminal-writer'
 import {
@@ -8,10 +9,13 @@ import {
 } from './orca-runtime-core'
 import { agentSessionPtyWriteGate } from './agent-session-pty-write-gate'
 import {
+  AGENT_PROMPT_BRACKETED_PASTE_END,
+  AGENT_PROMPT_BRACKETED_PASTE_START,
   AGENT_PROMPT_SUBMIT,
   getAgentPromptSubmitDelayMs,
   getTerminalPasteIngestMs
 } from '../../shared/agent-prompt-injection'
+import { normalizeOmpPromptInput } from './omp-prompt-readiness'
 import type { AgentPromptWaitTextCache } from './agent-prompt-submission-verification'
 import {
   resolveAgentPromptEffectTimeoutMs,
@@ -30,6 +34,11 @@ export class OrcaRuntimeWithWriteTerminalAgentPrompt extends OrcaRuntimeWithReso
     this.assertAgentPromptGeneration(ptyId, generation)
     const permissionBaseline = this.getAgentPromptActivity(handle, ptyId)
     this.assertAgentPromptPermissionSafe(permissionBaseline, permissionBaseline)
+    await this.waitForOmpPromptReadiness(handle, ptyId, generation, options.signal)
+    this.assertAgentPromptPermissionSafe(
+      permissionBaseline,
+      this.getAgentPromptActivity(handle, ptyId)
+    )
     const admitted = agentSessionPtyWriteGate.assertAdmitted(ptyId)
     const writeHostPlatform = this.getPtyWriteHostPlatform(ptyId)
     const pasteByteLength = Buffer.byteLength(pastePayload, 'utf8')
@@ -45,6 +54,7 @@ export class OrcaRuntimeWithWriteTerminalAgentPrompt extends OrcaRuntimeWithReso
         permissionBaseline,
         this.getAgentPromptActivity(handle, ptyId)
       )
+      this.assertOmpPromptReadiness(ptyId)
       agentSessionPtyWriteGate.assertReadmitted(ptyId, admitted)
       // Keep the bracketed paste frame in one PTY write; Claude's composer can drop the
       // beginning when a large frame is split into independently processed chunks.
@@ -85,6 +95,7 @@ export class OrcaRuntimeWithWriteTerminalAgentPrompt extends OrcaRuntimeWithReso
     const waitTextCache: AgentPromptWaitTextCache = {}
     const baseline = this.getAgentPromptActivity(handle, ptyId, waitTextCache)
     this.assertAgentPromptPermissionSafe(permissionBaseline, baseline)
+    this.assertOmpPromptReadiness(ptyId)
     agentSessionPtyWriteGate.assertReadmitted(ptyId, admitted)
     if (!this.ptyController?.write(ptyId, AGENT_PROMPT_SUBMIT)) {
       throw new Error(options.suffixFailureError ?? 'terminal_not_writable')
@@ -92,6 +103,19 @@ export class OrcaRuntimeWithWriteTerminalAgentPrompt extends OrcaRuntimeWithReso
     await verifyAgentPromptSubmission({
       baseline,
       readActivity: () => this.getAgentPromptActivity(handle, ptyId, waitTextCache),
+      expectedOmpPromptFingerprint:
+        this.getPtyAgent(ptyId) === 'omp'
+          ? createHash('sha256')
+              .update(
+                normalizeOmpPromptInput(
+                  pastePayload.slice(
+                    AGENT_PROMPT_BRACKETED_PASTE_START.length,
+                    -AGENT_PROMPT_BRACKETED_PASTE_END.length
+                  )
+                )
+              )
+              .digest('hex')
+          : undefined,
       timeoutMs: resolveAgentPromptEffectTimeoutMs(this.getPtyAgent(ptyId)),
       signal: options.signal
     })
