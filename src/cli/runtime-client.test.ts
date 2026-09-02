@@ -6,9 +6,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ORCHESTRATION_CONTRACT_RUNTIME_CAPABILITY } from '../shared/protocol-version'
 import { RuntimeClient, RuntimeClientError, RuntimeRpcFailureError } from './runtime-client'
 import { launchOrcaApp } from './runtime/launch'
+import {
+  reconcileWindowsOrcaRuntimes,
+  withOrcaHostStartLock
+} from './runtime/windows-orca-runtime-ownership'
 
-vi.mock('./runtime/launch', () => ({
-  launchOrcaApp: vi.fn()
+vi.mock('./runtime/launch', () => ({ launchOrcaApp: vi.fn() }))
+vi.mock('./runtime/windows-orca-runtime-ownership', () => ({
+  reconcileWindowsOrcaRuntimes: vi.fn(),
+  withOrcaHostStartLock: vi.fn(async (run: () => Promise<unknown>) => await run())
 }))
 
 const servers = new Set<ReturnType<typeof createServer>>()
@@ -16,6 +22,8 @@ const sockets = new Set<Socket>()
 
 afterEach(async () => {
   vi.mocked(launchOrcaApp).mockClear()
+  vi.mocked(reconcileWindowsOrcaRuntimes).mockClear()
+  vi.mocked(withOrcaHostStartLock).mockClear()
   for (const socket of sockets) {
     socket.destroy()
   }
@@ -314,6 +322,45 @@ describe.skipIf(process.platform === 'win32')('RuntimeClient', () => {
     expect(status.result.runtime.state).toBe('ready')
     expect(status.result.runtime.reachable).toBe(true)
     expect(launchOrcaApp).toHaveBeenCalledOnce()
+  })
+
+  it('ensureOrca serializes host ownership and removes extra owners while preserving the ready target', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-client-'))
+    const endpoint = join(userDataPath, 'runtime.sock')
+    const server = createServer((socket) => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+      socket.once('data', (data) => {
+        const request = JSON.parse(String(data).trim()) as { id: string }
+        socket.write(
+          `${JSON.stringify({
+            id: request.id,
+            ok: true,
+            result: {
+              runtimeId: 'runtime-ready',
+              rendererGraphEpoch: 1,
+              graphStatus: 'ready',
+              authoritativeWindowId: 1,
+              desktopWindowStatus: 'available',
+              liveTabCount: 1,
+              liveLeafCount: 1
+            },
+            _meta: { runtimeId: 'runtime-ready' }
+          })}\n`
+        )
+      })
+    })
+    servers.add(server)
+    await new Promise<void>((resolve) => server.listen(endpoint, resolve))
+    writeMetadata(userDataPath, endpoint, 'token', process.pid)
+
+    const client = new RuntimeClient(userDataPath, 100)
+    const status = await client.ensureOrca(100)
+
+    expect(status.result.runtime.state).toBe('ready')
+    expect(withOrcaHostStartLock).toHaveBeenCalledTimes(1)
+    expect(reconcileWindowsOrcaRuntimes).toHaveBeenCalledWith({ preservePid: process.pid })
+    expect(launchOrcaApp).not.toHaveBeenCalled()
   })
 
   it('openOrca waits for a reachable headless runtime to expose a desktop window', async () => {

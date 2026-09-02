@@ -13,12 +13,32 @@ import {
   SERVE_REPLACEMENT_READY_TIMEOUT_MS
 } from './serve-update-supervisor'
 
-const { spawnMock } = vi.hoisted(() => ({
-  spawnMock: vi.fn()
+const {
+  spawnMock,
+  readWindowsProcessTableFreshMock,
+  terminateWindowsProcessTreeMock,
+  withOrcaHostStartLockMock
+} = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  readWindowsProcessTableFreshMock: vi.fn(),
+  terminateWindowsProcessTreeMock: vi.fn(),
+  withOrcaHostStartLockMock: vi.fn(async (run) => await run())
 }))
 
 vi.mock('child_process', () => ({
   spawn: spawnMock
+}))
+
+vi.mock('./windows-process-table', () => ({
+  readWindowsProcessTableFresh: readWindowsProcessTableFreshMock
+}))
+
+vi.mock('./windows-process-tree-kill', () => ({
+  terminateWindowsProcessTree: terminateWindowsProcessTreeMock
+}))
+
+vi.mock('./orca-host-start-lock', () => ({
+  withOrcaHostStartLock: withOrcaHostStartLockMock
 }))
 
 import { launchOrcaApp, serveOrcaApp } from './launch'
@@ -599,12 +619,16 @@ describe('serveOrcaApp', () => {
 describe('launchOrcaApp', () => {
   beforeEach(() => {
     spawnMock.mockReset()
+    readWindowsProcessTableFreshMock.mockReset()
+    terminateWindowsProcessTreeMock.mockReset()
+    withOrcaHostStartLockMock.mockClear()
   })
 
   afterEach(() => {
     delete process.env.ORCA_OPEN_COMMAND
     delete process.env.ORCA_APP_EXECUTABLE
     delete process.env.ORCA_APP_EXECUTABLE_NEEDS_APP_ROOT
+    delete process.env.ORCA_USER_DATA_PATH
   })
 
   it('handles asynchronous detached spawn errors without throwing', async () => {
@@ -612,10 +636,127 @@ describe('launchOrcaApp', () => {
     const child = new FakeChildProcess()
     spawnMock.mockReturnValue(child)
 
-    launchOrcaApp()
+    await launchOrcaApp({ replaceExisting: false })
     child.emit('error', new Error('ENOENT'))
     await Promise.resolve()
 
     expect(child.unref).toHaveBeenCalled()
+  })
+
+  it('recognizes an Orca dev Electron tree as a host runtime owner', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    process.env.ORCA_APP_EXECUTABLE = 'E:\\builds\\mission\\Orca.exe'
+    process.env.ORCA_USER_DATA_PATH = 'E:\\profiles\\mission'
+    const child = new FakeChildProcess()
+    spawnMock.mockReturnValue(child)
+    terminateWindowsProcessTreeMock.mockResolvedValue(undefined)
+    readWindowsProcessTableFreshMock
+      .mockResolvedValueOnce([
+        {
+          pid: 300,
+          ppid: 1,
+          name: 'node.exe',
+          command: '"C:\\repo\\node.exe" "C:\\repo\\config\\scripts\\run-electron-vite-dev.mjs"'
+        },
+        {
+          pid: 301,
+          ppid: 300,
+          name: 'node.exe',
+          command: '"C:\\repo\\node.exe" "C:\\repo\\node_modules\\electron-vite\\bin\\electron-vite.js" dev'
+        },
+        {
+          pid: 302,
+          ppid: 301,
+          name: 'electron.exe',
+          command: '"C:\\repo\\node_modules\\electron\\dist\\electron.exe" . --remote-debugging-port=9222'
+        },
+        {
+          pid: 303,
+          ppid: 302,
+          name: 'electron.exe',
+          command: '"C:\\repo\\node_modules\\electron\\dist\\electron.exe" --type=renderer'
+        }
+      ])
+      .mockResolvedValueOnce([])
+
+    try {
+      await launchOrcaApp()
+
+      expect(terminateWindowsProcessTreeMock).toHaveBeenCalledWith(302)
+      expect(terminateWindowsProcessTreeMock).not.toHaveBeenCalledWith(303)
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+    }
+  })
+
+  it('replaces old Windows Orca runtimes before launching the pinned profile', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    process.env.ORCA_APP_EXECUTABLE = 'E:\\builds\\mission\\Orca.exe'
+    process.env.ORCA_USER_DATA_PATH = 'E:\\profiles\\mission'
+    const child = new FakeChildProcess()
+    spawnMock.mockReturnValue(child)
+    terminateWindowsProcessTreeMock.mockResolvedValue(undefined)
+    readWindowsProcessTableFreshMock
+      .mockResolvedValueOnce([
+        {
+          pid: 101,
+          ppid: 1,
+          name: 'orca.exe',
+          command: '"E:\\builds\\mission\\resources\\bin\\orca.exe" open'
+        },
+        {
+          pid: 200,
+          ppid: 1,
+          name: 'Orca.exe',
+          command: '"E:\\old\\Orca.exe" --user-data-dir=E:\\old-profile'
+        },
+        {
+          pid: 201,
+          ppid: 200,
+          name: 'Orca.exe',
+          command: '"E:\\old\\Orca.exe" --type=renderer'
+        },
+        {
+          pid: 202,
+          ppid: 1,
+          name: 'Orca.exe',
+          command: '"E:\\old\\Orca.exe" --type=crashpad-handler'
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          pid: 101,
+          ppid: 1,
+          name: 'orca.exe',
+          command: '"E:\\builds\\mission\\resources\\bin\\orca.exe" open'
+        }
+      ])
+
+    try {
+      await launchOrcaApp()
+
+      expect(terminateWindowsProcessTreeMock).toHaveBeenCalledTimes(2)
+      expect(terminateWindowsProcessTreeMock).toHaveBeenCalledWith(200)
+      expect(terminateWindowsProcessTreeMock).toHaveBeenCalledWith(202)
+      expect(terminateWindowsProcessTreeMock).not.toHaveBeenCalledWith(101)
+      expect(terminateWindowsProcessTreeMock).not.toHaveBeenCalledWith(201)
+      expect(spawnMock).toHaveBeenCalledWith(
+        'E:\\builds\\mission\\Orca.exe',
+        ['--user-data-dir=E:\\profiles\\mission'],
+        expect.objectContaining({ detached: true, stdio: 'ignore' })
+      )
+      expect(terminateWindowsProcessTreeMock.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        spawnMock.mock.invocationCallOrder[0]!
+      )
+      expect(withOrcaHostStartLockMock).toHaveBeenCalledTimes(1)
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+    }
   })
 })

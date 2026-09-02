@@ -7,6 +7,10 @@ import {
 } from '../../shared/orchestration-rpc-contract'
 import { parsePairingCode, type PairingOffer } from '../../shared/pairing'
 import { launchOrcaApp } from './launch'
+import {
+  reconcileWindowsOrcaRuntimes,
+  withOrcaHostStartLock
+} from './windows-orca-runtime-ownership'
 import { getDefaultUserDataPath, readMetadata } from './metadata'
 import { getCliStatus, projectRemoteAppStatus } from './status'
 import { sendRequest } from './transport'
@@ -181,7 +185,39 @@ export class RuntimeClient {
     }
   }
 
-  async openOrca(timeoutMs = 15_000): Promise<RuntimeRpcSuccess<CliStatusResult>> {
+  async ensureOrca(timeoutMs = 60_000): Promise<RuntimeRpcSuccess<CliStatusResult>> {
+    if (this.remotePairing) {
+      return await this.getCliStatus()
+    }
+    return await withOrcaHostStartLock(async () => {
+      let current = await this.getCliStatus()
+      if (current.result.runtime.reachable && current.result.graph.state === 'ready') {
+        await reconcileWindowsOrcaRuntimes({ preservePid: current.result.app.pid })
+        current = await this.getCliStatus()
+        if (current.result.runtime.reachable && current.result.graph.state === 'ready') {
+          return current
+        }
+      }
+
+      await reconcileWindowsOrcaRuntimes()
+      await launchOrcaApp({ replaceExisting: false })
+      const startedAt = Date.now()
+      while (Date.now() - startedAt < timeoutMs) {
+        const status = await this.getCliStatus()
+        if (status.result.runtime.reachable && status.result.graph.state === 'ready') {
+          return status
+        }
+        await delay(250)
+      }
+
+      throw new RuntimeClientError(
+        'runtime_open_timeout',
+        'Timed out waiting for the exact Orca runtime to become ready.'
+      )
+    })
+  }
+
+  async openOrca(timeoutMs = 60_000): Promise<RuntimeRpcSuccess<CliStatusResult>> {
     const initial = await this.getCliStatus()
     if (this.remotePairing) {
       return initial
@@ -192,7 +228,14 @@ export class RuntimeClient {
     if (initial.result.app.desktopWindowStatus === 'blocked') {
       throwDesktopActivationBlocked()
     }
-    launchOrcaApp()
+    if (!initial.result.runtime.reachable || initial.result.graph.state !== 'ready') {
+      const ensured = await this.ensureOrca(timeoutMs)
+      if (ensured.result.app.desktopWindowStatus === 'available') {
+        return ensured
+      }
+    }
+
+    await launchOrcaApp({ replaceExisting: false })
     if (initial.result.app.desktopWindowStatus === 'available') {
       return initial
     }

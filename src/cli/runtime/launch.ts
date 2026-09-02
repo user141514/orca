@@ -16,11 +16,26 @@ import {
   resumeInterruptedServeUpdate,
   superviseForegroundServe
 } from './serve-update-supervisor'
+import {
+  reconcileWindowsOrcaRuntimes,
+  withOrcaHostStartLock
+} from './windows-orca-runtime-ownership'
 import { RuntimeClientError } from './types'
 
 const IGNORED_NON_RECIPE_STDOUT = '[serve] ignored non-recipe stdout'
 
-export function launchOrcaApp(): void {
+export async function launchOrcaApp(options: { replaceExisting?: boolean } = {}): Promise<void> {
+  if (process.platform === 'win32' && options.replaceExisting !== false) {
+    await withOrcaHostStartLock(async () => {
+      await reconcileWindowsOrcaRuntimes()
+      launchOrcaAppUnlocked()
+    })
+    return
+  }
+  launchOrcaAppUnlocked()
+}
+
+function launchOrcaAppUnlocked(): void {
   const overrideCommand = process.env.ORCA_OPEN_COMMAND
   if (typeof overrideCommand === 'string' && overrideCommand.trim().length > 0) {
     spawnDetached(overrideCommand, [], { shell: true })
@@ -50,7 +65,7 @@ export function launchOrcaApp(): void {
       }
     }
 
-    spawnDetached(process.execPath, [], {
+    spawnDetached(process.execPath, getExecutableAppArgs(), {
       env: stripElectronRunAsNode(process.env)
     })
     return
@@ -257,7 +272,15 @@ function waitForRecipeJson(child: ReturnType<typeof spawnProcess>): Promise<numb
 }
 
 function getExecutableAppArgs(): string[] {
-  return process.env.ORCA_APP_EXECUTABLE_NEEDS_APP_ROOT === '1' ? [resolveAppRoot()] : []
+  const args: string[] = []
+  const userDataPath = process.env.ORCA_USER_DATA_PATH?.trim()
+  if (userDataPath) {
+    args.push(`--user-data-dir=${userDataPath}`)
+  }
+  if (process.env.ORCA_APP_EXECUTABLE_NEEDS_APP_ROOT === '1') {
+    args.push(resolveAppRoot())
+  }
+  return args
 }
 
 function getExecutableSpawnOptions(executable: string): Pick<SpawnOptions, 'shell'> {

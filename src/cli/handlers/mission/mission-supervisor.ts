@@ -1,5 +1,5 @@
 import { RuntimeClientError, type RuntimeClient } from '../../runtime-client'
-import { isDevCliInvocation } from '../orchestration/runtime-compatibility'
+import { startMissionWorker } from './mission-worker-start'
 
 export type MissionAdmission = {
   acceptedTypes: string[]
@@ -224,71 +224,6 @@ async function superviseMission(input: {
       })
     }
   }
-}
-
-type MissionWorkerStartResult = {
-  taskId: string
-  dispatchId: string
-  state: string
-  failedStage?: string
-  lastError?: string
-}
-
-const RETRYABLE_WORKER_START_STAGES = new Set(['terminal_create', 'agent_readiness'])
-
-async function startMissionWorker(
-  input: {
-    client: RuntimeClient
-    runId: string
-    from: string
-    worktree: string
-    agent: string
-    agentCandidates?: readonly string[]
-  },
-  taskId: string
-): Promise<void> {
-  const candidates = input.agentCandidates?.length ? input.agentCandidates : [input.agent]
-  const failures: string[] = []
-  let retryOf: string | undefined
-
-  for (const [index, agent] of candidates.entries()) {
-    try {
-      const worker = await input.client.call<MissionWorkerStartResult>('orchestration.workerStart', {
-        task: taskId,
-        run: input.runId,
-        from: input.from,
-        worktree: input.worktree,
-        agent,
-        ...(retryOf ? { retryOf } : {}),
-        devMode: isDevCliInvocation()
-      })
-      if (worker.result.state === 'ready') {
-        return
-      }
-
-      const reason =
-        worker.result.lastError ?? `Worker ${worker.result.dispatchId} failed to become ready.`
-      const hasNext = index + 1 < candidates.length
-      if (hasNext && RETRYABLE_WORKER_START_STAGES.has(worker.result.failedStage ?? '')) {
-        failures.push(`${agent}: ${reason}`)
-        retryOf = worker.result.dispatchId
-        continue
-      }
-      throw new RuntimeClientError('mission_worker_start_failed', reason)
-    } catch (error) {
-      const hasNext = index + 1 < candidates.length
-      if (hasNext && error instanceof RuntimeClientError && error.code === 'agent_unconfigured') {
-        failures.push(`${agent}: ${error.message}`)
-        continue
-      }
-      throw error
-    }
-  }
-
-  throw new RuntimeClientError(
-    'mission_worker_start_failed',
-    `No mission agent could start task ${taskId}: ${failures.join('; ')}`
-  )
 }
 
 function orderTasksForCreation(tasks: readonly MissionTask[]): MissionTask[] {

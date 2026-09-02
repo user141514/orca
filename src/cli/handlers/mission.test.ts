@@ -36,6 +36,15 @@ function response<T>(result: T) {
   return { id: 'test', ok: true as const, result, _meta: { runtimeId: 'runtime-test' } }
 }
 
+function readyStatusResponse() {
+  return response({
+    target: { kind: 'local' },
+    app: { running: true, desktopWindowStatus: 'available' },
+    runtime: { state: 'ready', reachable: true, runtimeId: 'runtime-test' },
+    graph: { state: 'ready' }
+  })
+}
+
 function flags(values: Record<string, string | boolean>): Map<string, string | boolean> {
   return new Map(Object.entries(values))
 }
@@ -54,13 +63,15 @@ function makeContext(
 
 describe('mission start supervisor', () => {
   afterEach(() => {
+    delete process.env.ORCA_MISSION_SCRATCH_ROOT
     vi.restoreAllMocks()
   })
 
   it('does not activate or launch Orca before planning a mission from an existing pane', async () => {
     const openOrca = vi.fn()
+    const ensureOrca = vi.fn().mockResolvedValue(readyStatusResponse())
     const call = vi.fn().mockRejectedValue(new Error('planner_probe'))
-    const client = { call, openOrca, isRemote: false } as unknown as RuntimeClient
+    const client = { call, openOrca, ensureOrca, isRemote: false } as unknown as RuntimeClient
 
     await expect(
       MISSION_HANDLERS['mission start'](
@@ -72,6 +83,7 @@ describe('mission start supervisor', () => {
       )
     ).rejects.toThrow('planner_probe')
 
+    expect(ensureOrca).toHaveBeenCalledTimes(1)
     expect(openOrca).not.toHaveBeenCalled()
     expect(call).toHaveBeenCalledWith('mission.plan', {
       text: 'inspect routing',
@@ -137,7 +149,11 @@ describe('mission start supervisor', () => {
       }
       throw new Error(`unexpected method: ${method}`)
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
 
     await MISSION_HANDLERS['mission start'](
@@ -154,6 +170,71 @@ describe('mission start supervisor', () => {
     expect(workerAgents).toEqual(['pi', 'codex'])
     const workerStarts = call.mock.calls.filter(([method]) => method === 'orchestration.workerStart')
     expect(workerStarts[1]?.[1]).toMatchObject({ retryOf: 'ctx_pi' })
+  })
+
+  it('keeps supervising the same Dispatch when agent_prompt_stalled still leaves the Task dispatched', async () => {
+    const task: TaskState = { id: 'task_mission', key: 'mission', deps: [], status: 'ready' }
+    let completed = false
+    const call = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'mission.plan') {
+        return response<MissionPlanResult>({
+          mission: 'ambiguous but live',
+          agent: 'pi',
+          agentCandidates: ['pi', 'codex'],
+          plan: { mode: 'single-agent' }
+        })
+      }
+      if (method === 'orchestration.runCreate') {
+        return response({ run: { id: 'run_ambiguous_live', objective: 'ambiguous but live' } })
+      }
+      if (method === 'orchestration.taskCreate') {
+        return response({ task: { id: task.id, status: task.status } })
+      }
+      if (method === 'orchestration.taskList') {
+        task.status = completed ? 'completed' : task.status
+        return response({ runId: 'run_ambiguous_live', tasks: [task], count: 1 })
+      }
+      if (method === 'orchestration.workerStart') {
+        task.status = 'failed'
+        return response({
+          runId: 'run_ambiguous_live',
+          taskId: task.id,
+          dispatchId: 'ctx_pi',
+          state: 'failed',
+          failedStage: 'dispatch_input',
+          lastError: 'agent_prompt_stalled'
+        })
+      }
+      if (method === 'orchestration.check' && params?.wait) {
+        completed = true
+        task.status = 'completed'
+        return response({ deliveryId: 'delivery_done', timedOut: false, cancelled: false })
+      }
+      if (method === 'orchestration.check' && params?.ack) {
+        return response({ deliveryId: null, timedOut: false, cancelled: false })
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    await expect(
+      MISSION_HANDLERS['mission start'](
+        makeContext(client, {
+          text: 'ambiguous but live',
+          worktree: 'id:repo::worktree',
+          from: 'term_coord'
+        })
+      )
+    ).resolves.toBeUndefined()
+
+    const workerStarts = call.mock.calls.filter(([method]) => method === 'orchestration.workerStart')
+    expect(workerStarts).toHaveLength(1)
+    expect(task.status).toBe('completed')
   })
 
   it('does not retry another agent after an ambiguous dispatch-input failure', async () => {
@@ -189,7 +270,11 @@ describe('mission start supervisor', () => {
       }
       throw new Error(`unexpected method: ${method}`)
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
 
     await expect(
       MISSION_HANDLERS['mission start'](
@@ -301,7 +386,11 @@ describe('mission start supervisor', () => {
       }
       throw new Error(`unexpected method: ${method}`)
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
 
     await MISSION_HANDLERS['mission start'](
@@ -402,7 +491,11 @@ describe('mission start supervisor', () => {
       }
       throw new Error(`unexpected method: ${method}`)
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
 
     await MISSION_HANDLERS['mission start'](
@@ -492,7 +585,11 @@ describe('mission start supervisor', () => {
       }
       throw new Error(`unexpected method: ${method}`)
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
 
     await MISSION_HANDLERS['mission start'](
@@ -592,7 +689,11 @@ describe('mission start supervisor', () => {
       }
       throw new Error(`unexpected method: ${method}`)
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const client = {
+      call,
+      ensureOrca: vi.fn().mockResolvedValue(readyStatusResponse()),
+      isRemote: false
+    } as unknown as RuntimeClient
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
 
     await MISSION_HANDLERS['mission start'](
