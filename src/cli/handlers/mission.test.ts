@@ -83,7 +83,8 @@ describe('mission start supervisor', () => {
         stopToken: 'stop_secret'
       })
     })
-    const client = { call, isRemote: false } as unknown as RuntimeClient
+    const ensureOrca = vi.fn().mockResolvedValue(readyStatusResponse())
+    const client = { call, ensureOrca, isRemote: false } as unknown as RuntimeClient
     vi.spyOn(console, 'log').mockImplementation(() => undefined)
 
     await MISSION_HANDLERS['mission start'](
@@ -93,6 +94,7 @@ describe('mission start supervisor', () => {
       })
     )
 
+    expect(ensureOrca).toHaveBeenCalledWith(60_000)
     expect(call).toHaveBeenCalledTimes(1)
     expect(call).toHaveBeenCalledWith(
       'mission.start',

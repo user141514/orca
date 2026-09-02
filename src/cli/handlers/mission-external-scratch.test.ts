@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HandlerContext } from '../dispatch'
-import type { RuntimeClient } from '../runtime-client'
+import { RuntimeClientError, type RuntimeClient } from '../runtime-client'
 import { MISSION_HANDLERS } from './mission'
 
 type MissionPlanResult = {
@@ -40,6 +40,63 @@ describe('external mission scratch workspace', () => {
     vi.restoreAllMocks()
   })
 
+  it('uses detached mission.start from a scratch workspace without creating a coordinator', async () => {
+    const scratchRoot = await mkdtemp(join(tmpdir(), 'orca-mission-scratch-detached-'))
+    process.env.ORCA_MISSION_SCRATCH_ROOT = scratchRoot
+    const ensureOrca = vi.fn().mockResolvedValue(readyStatusResponse())
+    let createdFolderPath: string | undefined
+    const call = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'worktree.list') {
+        return response({ worktrees: [], count: 0 })
+      }
+      if (method === 'projectGroup.list') {
+        return response({ groups: [] })
+      }
+      if (method === 'projectGroup.create') {
+        return response({
+          group: { id: 'group-detached', name: 'Mission Scratch', parentPath: scratchRoot }
+        })
+      }
+      if (method === 'folderWorkspace.create') {
+        createdFolderPath = params?.folderPath as string | undefined
+        return response({
+          folderWorkspace: {
+            id: 'fw-detached',
+            projectGroupId: 'group-detached',
+            folderPath: createdFolderPath
+          }
+        })
+      }
+      if (method === 'mission.start') {
+        return response({ runId: 'run-detached', lifecycle: 'detached' })
+      }
+      if (method === 'terminal.create') {
+        throw new Error('detached mission must not create a coordinator')
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+    const client = { call, ensureOrca, isRemote: false } as unknown as RuntimeClient
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    try {
+      await MISSION_HANDLERS['mission start'](makeContext(client, 'detached scratch mission'))
+
+      expect(ensureOrca).toHaveBeenCalledWith(60_000)
+      expect(createdFolderPath).toContain(scratchRoot)
+      expect(call).toHaveBeenCalledWith(
+        'mission.start',
+        expect.objectContaining({
+          text: 'detached scratch mission',
+          worktree: 'folder:fw-detached'
+        }),
+        { orchestrationRequestId: undefined }
+      )
+      expect(call.mock.calls.some(([method]) => method === 'terminal.create')).toBe(false)
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true })
+    }
+  })
+
   it('creates a scratch folder workspace and coordinator for an external mission shell', async () => {
     const scratchRoot = await mkdtemp(join(tmpdir(), 'orca-mission-scratch-'))
     process.env.ORCA_MISSION_SCRATCH_ROOT = scratchRoot
@@ -66,6 +123,9 @@ describe('external mission scratch workspace', () => {
             folderPath: createdFolderPath
           }
         })
+      }
+      if (method === 'mission.start') {
+        throw new RuntimeClientError('method_not_found', 'Detached Mission is unavailable')
       }
       if (method === 'terminal.create') {
         return response({ terminal: { handle: 'term-scratch-coord' } })
@@ -149,6 +209,9 @@ describe('external mission scratch workspace', () => {
             folderPath: params?.folderPath
           }
         })
+      }
+      if (method === 'mission.start') {
+        throw new RuntimeClientError('method_not_found', 'Detached Mission is unavailable')
       }
       if (method === 'terminal.create') {
         terminalCreates += 1
