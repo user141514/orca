@@ -40,6 +40,8 @@ export type GateStatus = 'pending' | 'resolved' | 'timeout'
 
 export type CoordinatorStatus = 'idle' | 'running' | 'completed' | 'failed'
 
+export type RunControllerKind = 'terminal' | 'mission'
+
 export type RunRow = {
   id: string
   objective: string
@@ -48,8 +50,36 @@ export type RunRow = {
   coordinator_pane_key: string | null
   consumer_generation: number
   legacy: number
+  controller_kind: RunControllerKind
   created_at: string
   updated_at: string
+}
+
+export type DetachedMissionLifecycle =
+  | 'queued'
+  | 'running'
+  | 'awaiting_input'
+  | 'stopping'
+  | 'stopped'
+  | 'succeeded'
+  | 'failed'
+
+export type DetachedMissionTerminalOutcome = 'stopped' | 'succeeded' | 'failed'
+
+export type DetachedMissionRunRow = {
+  run_id: string
+  lifecycle: DetachedMissionLifecycle
+  worktree_id: string | null
+  planner_selection_json: string
+  worker_selection_json: string
+  max_concurrency: number
+  owner_fingerprint: string
+  stop_secret_hash: string
+  supervisor_generation: number
+  created_at: string
+  updated_at: string
+  terminal_outcome: DetachedMissionTerminalOutcome | null
+  last_error: string | null
 }
 
 export type DeliveryStatus = 'outstanding' | 'acknowledged' | 'fenced'

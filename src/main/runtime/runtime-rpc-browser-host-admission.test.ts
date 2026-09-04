@@ -33,6 +33,7 @@ describe('runtime RPC browser-host admission', () => {
   it('classifies host attachment for bounded disconnect-aware admission', () => {
     expect(classifyRuntimeLongPoll(request('browser.clientHost.attach'))).toBe('browser-host')
     expect(classifyRuntimeLongPoll(request('mission.plan'))).toBe('mission-plan')
+    expect(classifyRuntimeLongPoll(request('mission.start'))).toBe('mission-plan')
     expect(classifyRuntimeLongPoll(request('terminal.wait'))).toBe('wait')
     expect(classifyRuntimeLongPoll(request('orchestration.ask'))).toBe('ask')
     expect(classifyRuntimeLongPoll(request('orchestration.workerStart'))).toBe('wait')

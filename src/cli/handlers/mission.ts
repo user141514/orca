@@ -4,7 +4,11 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { CommandHandler } from '../dispatch'
 import { printResult } from '../format'
-import { getOptionalStringFlag, getRequiredStringFlag } from '../flags'
+import {
+  getOptionalStringFlag,
+  getRequiredStringFlag,
+  getRequiredStringFlagAllowingEmpty
+} from '../flags'
 import { RuntimeClientError, type RuntimeClient } from '../runtime-client'
 import { withOrcaCliLock } from '../runtime/orca-host-start-lock'
 import { getBrowserWorktreeSelector } from '../selectors'
@@ -18,10 +22,81 @@ import { resolveCoordinatorTerminalHandle } from './orchestration/terminal-ident
 const MISSION_RUNTIME_START_TIMEOUT_MS = 60_000
 
 export const MISSION_HANDLERS: Record<string, CommandHandler> = {
+  'mission show': async ({ flags, client, json }) => {
+    const result = await client.call<{
+      runId: string
+      lifecycle: string
+      counts: Record<string, number>
+      questions: unknown[]
+      lastError: string | null
+    }>('mission.show', {
+      runId: getRequiredStringFlag(flags, 'run')
+    })
+    printResult(
+      result,
+      json,
+      (value) =>
+        `Mission run ${value.runId} ${value.lifecycle}: ${value.counts.completed ?? 0}/${value.counts.total ?? 0} completed, ${value.questions.length} pending question(s).`
+    )
+  },
+  'mission answer': async ({ flags, client, json }) => {
+    const result = await client.call<{ runId: string; accepted: boolean }>(
+      'mission.answer',
+      {
+        runId: getRequiredStringFlag(flags, 'run'),
+        questionId: getRequiredStringFlag(flags, 'question'),
+        body: getRequiredStringFlagAllowingEmpty(flags, 'body')
+      },
+      { orchestrationRequestId: getOptionalStringFlag(flags, 'request-id') }
+    )
+    printResult(result, json, (value) => `Mission run ${value.runId} answer accepted.`)
+  },
+  'mission stop': async ({ flags, client, json }) => {
+    const result = await client.call<{ runId: string; lifecycle: string }>(
+      'mission.stop',
+      {
+        runId: getRequiredStringFlag(flags, 'run'),
+        stopToken: getRequiredStringFlag(flags, 'stop-token'),
+        reason: getOptionalStringFlag(flags, 'reason')
+      },
+      { orchestrationRequestId: getOptionalStringFlag(flags, 'request-id') }
+    )
+    printResult(result, json, (value) => `Mission run ${value.runId} ${value.lifecycle}.`)
+  },
   'mission start': async ({ flags, client, cwd, json }) => {
     const mission = getRequiredStringFlag(flags, 'text')
     await client.ensureOrca(MISSION_RUNTIME_START_TIMEOUT_MS)
     const workspace = await resolveMissionWorkspace(flags, cwd, client)
+    const explicitFrom = getOptionalStringFlag(flags, 'from')
+    const requestId = getOptionalStringFlag(flags, 'request-id')
+
+    if (!explicitFrom) {
+      try {
+        const started = await client.call(
+          'mission.start',
+          {
+            text: mission,
+            worktree: workspace.worktree,
+            agent: getOptionalStringFlag(flags, 'agent'),
+            model: getOptionalStringFlag(flags, 'model'),
+            effort: getOptionalStringFlag(flags, 'effort'),
+            requestId
+          },
+          { orchestrationRequestId: requestId }
+        )
+        printResult(
+          started,
+          json,
+          (value) => `Mission run ${(value as { runId: string }).runId} detached.`
+        )
+        return
+      } catch (error) {
+        if (!(error instanceof RuntimeClientError) || error.code !== 'method_not_found') {
+          throw error
+        }
+      }
+    }
+
     const coordinator = await resolveMissionCoordinator(flags, cwd, client, workspace)
     try {
       const planned = await client.call<MissionPlanRpcResult>('mission.plan', {
@@ -86,40 +161,47 @@ async function resolveMissionWorkspace(
     )
   }
 
-  const scratchRoot = process.env.ORCA_MISSION_SCRATCH_ROOT?.trim() || join(homedir(), '.orca', 'mission-scratch')
+  const scratchRoot =
+    process.env.ORCA_MISSION_SCRATCH_ROOT?.trim() || join(homedir(), '.orca', 'mission-scratch')
   await mkdir(scratchRoot, { recursive: true })
-  const group = await withOrcaCliLock(async () => {
-    const groups = await client.call<{
-      groups: { id: string; name: string; parentPath?: string | null }[]
-    }>('projectGroup.list')
-    const matchingGroups = groups.result.groups.filter((candidate) =>
-      samePath(candidate.parentPath, scratchRoot)
-    )
-    if (matchingGroups.length > 1) {
-      throw new RuntimeClientError(
-        'mission_scratch_ambiguous',
-        `Multiple Mission scratch project groups target ${scratchRoot}.`
+  const group = await withOrcaCliLock(
+    async () => {
+      const groups = await client.call<{
+        groups: { id: string; name: string; parentPath?: string | null }[]
+      }>('projectGroup.list')
+      const matchingGroups = groups.result.groups.filter((candidate) =>
+        samePath(candidate.parentPath, scratchRoot)
       )
-    }
-    return (
-      matchingGroups[0] ??
-      (
-        await client.call<{ group: { id: string } }>('projectGroup.create', {
-          name: 'Mission Scratch',
-          parentPath: scratchRoot,
-          createdFrom: 'manual'
-        })
-      ).result.group
-    )
-  }, { lockHome: scratchRoot, lockName: 'project-group.lock' })
+      if (matchingGroups.length > 1) {
+        throw new RuntimeClientError(
+          'mission_scratch_ambiguous',
+          `Multiple Mission scratch project groups target ${scratchRoot}.`
+        )
+      }
+      return (
+        matchingGroups[0] ??
+        (
+          await client.call<{ group: { id: string } }>('projectGroup.create', {
+            name: 'Mission Scratch',
+            parentPath: scratchRoot,
+            createdFrom: 'manual'
+          })
+        ).result.group
+      )
+    },
+    { lockHome: scratchRoot, lockName: 'project-group.lock' }
+  )
   const runId = randomUUID()
   const runPath = join(scratchRoot, 'runs', runId)
   await mkdir(runPath, { recursive: true })
-  const created = await client.call<{ folderWorkspace: { id: string } }>('folderWorkspace.create', {
-    projectGroupId: group.id,
-    name: `Mission ${runId.slice(0, 8)}`,
-    folderPath: runPath
-  })
+  const created = await client.call<{ folderWorkspace: { id: string } }>(
+    'folderWorkspace.create',
+    {
+      projectGroupId: group.id,
+      name: `Mission ${runId.slice(0, 8)}`,
+      folderPath: runPath
+    }
+  )
   return { worktree: `folder:${created.result.folderWorkspace.id}`, scratch: true }
 }
 

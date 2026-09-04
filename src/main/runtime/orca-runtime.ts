@@ -132,6 +132,8 @@ import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { resolveWorktreeCreateBase } from '../worktree-create-base'
 import { resolveWorktreeAddBaseRef } from '../../shared/worktree/base-ref'
 import { OrchestrationDb } from './orchestration/db'
+import { createDetachedMissionRuntimeService } from './orchestration/detached-mission-runtime-adapter'
+import type { DetachedMissionRunService } from './orchestration/detached-mission-run-service'
 import type { DispatchStatus } from './orchestration/types'
 import { reconcileRequestedWorkerTerminalReleases } from './orchestration/worker-terminal-release-reconciliation'
 import {
@@ -3311,6 +3313,7 @@ export class OrcaRuntimeService {
   // so a stop that never produced an exit cannot outlive its process.
   private readonly stopRequestedPtyIds = new Set<string>()
   private _orchestrationDb: OrchestrationDb | null = null
+  private detachedMissionRunService: DetachedMissionRunService | null = null
   private messageWaitersByHandle = new Map<string, Set<MessageWaiter>>()
   private readonly orchestrationMailboxOwner = new OrchestrationMailboxOwner({
     getDb: () => this._orchestrationDb,
@@ -4588,6 +4591,7 @@ export class OrcaRuntimeService {
       this._orchestrationDb = new OrchestrationDb(dbPath)
       this.ensureOrchestrationFederationRelay()
       this.scheduleRestoredMessageRepoints()
+      this.rehydrateDetachedMissionRuns()
     }
     return this._orchestrationDb
   }
@@ -4596,8 +4600,28 @@ export class OrcaRuntimeService {
     this.stopOrchestrationFederationRelay()
     this.mailPointerRepointScheduler.clear()
     this._orchestrationDb = db
+    this.detachedMissionRunService = null
     this.ensureOrchestrationFederationRelay()
     this.scheduleRestoredMessageRepoints()
+    this.rehydrateDetachedMissionRuns()
+  }
+
+  getDetachedMissionRunService(): DetachedMissionRunService {
+    const db = this.getOrchestrationDb()
+    this.detachedMissionRunService ??= createDetachedMissionRuntimeService(this, db)
+    return this.detachedMissionRunService
+  }
+
+  private rehydrateDetachedMissionRuns(): void {
+    try {
+      void this.getDetachedMissionRunService()
+        .rehydrate()
+        .catch((error) => {
+          console.warn('[orchestration] detached mission rehydration failed', error)
+        })
+    } catch (error) {
+      console.warn('[orchestration] detached mission rehydration failed', error)
+    }
   }
 
   private getLegacyWorkerTerminalRecoveryPlan(): LegacyWorkerTerminalRecoveryPlan {
@@ -35741,6 +35765,21 @@ export class OrcaRuntimeService {
       this.mailPointerRepointScheduler.schedule(handle)
     }
     this.orchestrationMailboxNotifications.notifyMessageArrived(handle, messageType)
+
+    if (
+      handle.startsWith('run:') &&
+      (messageType === 'worker_done' || messageType === 'question' || messageType === 'escalation')
+    ) {
+      const runId = handle.slice('run:'.length)
+      const mission = this._orchestrationDb?.readDetachedMissionRun(runId)
+      if (mission && !mission.terminal_outcome) {
+        void this.getDetachedMissionRunService()
+          .supervise(runId)
+          .catch((error) => {
+            console.warn(`[orchestration] detached mission ${runId} supervision failed`, error)
+          })
+      }
+    }
   }
 
   waitForMessage(

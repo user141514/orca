@@ -13,4 +13,20 @@ describe('mission command specs', () => {
     )
     expect(spec?.allowedFlags).not.toContain('retry-request')
   })
+
+  it('exposes detached mission show, answer, and stop controls', () => {
+    const byPath = new Map(
+      MISSION_COMMAND_SPECS.map((spec) => [spec.path.join(' '), spec])
+    )
+
+    expect(byPath.get('mission show')?.allowedFlags).toEqual(
+      expect.arrayContaining(['run', 'json'])
+    )
+    expect(byPath.get('mission answer')?.allowedFlags).toEqual(
+      expect.arrayContaining(['run', 'question', 'body', 'request-id', 'json'])
+    )
+    expect(byPath.get('mission stop')?.allowedFlags).toEqual(
+      expect.arrayContaining(['run', 'stop-token', 'reason', 'request-id', 'json'])
+    )
+  })
 })

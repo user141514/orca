@@ -31,16 +31,27 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
     params: WorkerStartParams,
     handler: async (
       params,
-      { runtime, orchestrationMutation, orchestrationCompatibilityEvidence }
+      {
+        runtime,
+        orchestrationMutation,
+        orchestrationCompatibilityEvidence,
+        internalDetachedMissionRunId
+      }
     ) => {
       const db = runtime.getOrchestrationDb()
       // Why: worker-start was the only Run-scoped verb that skipped this, so a
       // declared --from could name someone else's pane and inherit their depth.
-      const coordinatorPane = resolveOrchestrationCaller(runtime, {
-        callerTerminalHandle: params.from,
-        callerEvidence: orchestrationCompatibilityEvidence
-      })
-      const run = coordinatorPane ? db.getCurrentRunForPane(coordinatorPane) : undefined
+      const coordinatorPane = internalDetachedMissionRunId
+        ? undefined
+        : resolveOrchestrationCaller(runtime, {
+            callerTerminalHandle: params.from,
+            callerEvidence: orchestrationCompatibilityEvidence
+          })
+      const run = internalDetachedMissionRunId
+        ? db.getRun(internalDetachedMissionRunId)
+        : coordinatorPane
+          ? db.getCurrentRunForPane(coordinatorPane)
+          : undefined
       if (!run || (params.run && params.run !== run.id)) {
         throw new OrchestrationError(
           'consumer_fenced',
@@ -71,9 +82,11 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         requestedWorktree === 'new-child' || requestedWorktree === 'new-top-level'
       const { agent, launch } = prepareLocalWorkerStart({ params, createsWorktree, runtime })
 
-      const coordinatorTerminal = await runtime.showTerminal(params.from)
+      const coordinatorTerminal = internalDetachedMissionRunId
+        ? undefined
+        : await runtime.showTerminal(params.from)
       const creationWorktree = createsWorktree
-        ? await runtime.showManagedWorktree(`id:${coordinatorTerminal.worktreeId}`)
+        ? await runtime.showManagedWorktree(`id:${coordinatorTerminal!.worktreeId}`)
         : undefined
       if (creationWorktree) {
         await assertOrchestrationWorktreeCreationSupported({
@@ -85,7 +98,7 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
       let resolvedWorktree = creationWorktree
         ? undefined
         : requestedWorktree === 'current'
-          ? await runtime.showManagedTerminalWorkspace(`id:${coordinatorTerminal.worktreeId}`)
+          ? await runtime.showManagedTerminalWorkspace(`id:${coordinatorTerminal!.worktreeId}`)
           : await runtime.showManagedTerminalWorkspace(requestedWorktree)
       let explicitTerminal
       if (params.terminal) {
@@ -122,7 +135,9 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           : 'existing_worktree'
       }
       const started = db.createStartingWorkerDispatch({
-        creator: resolveDispatchCreator(runtime, params.from),
+        creator: internalDetachedMissionRunId
+          ? { kind: 'system' }
+          : resolveDispatchCreator(runtime, params.from),
         maxDepth: runtime.getNestedWorkerMaxDepth(),
         taskId: task.id,
         retryOf: params.retryOf,
