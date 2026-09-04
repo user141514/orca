@@ -1,4 +1,5 @@
 import { homedir } from 'node:os'
+import { createHash, randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { getCommitMessageAgentSpec } from '../../../../shared/commit-message-agent-spec'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
@@ -29,6 +30,25 @@ const MissionPlanParams = z.object({
 })
 
 const MISSION_PLANNING_TOTAL_TIMEOUT_MS = SOURCE_CONTROL_GENERATION_TIMEOUT_MS * 2
+
+const MissionStartParams = MissionPlanParams.extend({
+  model: z.string().min(1).optional(),
+  effort: z.string().min(1).optional(),
+  requestId: z.string().min(1).optional()
+})
+const MissionShowParams = z.object({ runId: requiredString('Missing mission run id') })
+const MissionAnswerParams = z.object({
+  runId: requiredString('Missing mission run id'),
+  questionId: requiredString('Missing question id'),
+  body: z.string(),
+  ownerFingerprint: z.string().min(1).optional()
+})
+const MissionStopParams = z.object({
+  runId: requiredString('Missing mission run id'),
+  stopToken: requiredString('Missing mission stop token'),
+  reason: z.string().min(1).optional(),
+  ownerFingerprint: z.string().min(1).optional()
+})
 
 export const MISSION_METHODS: RpcMethod[] = [
   defineMethod({
@@ -86,8 +106,132 @@ export const MISSION_METHODS: RpcMethod[] = [
         `Mission planner failed for all available agents (${agents.join(', ')}): ${lastPlannerError?.message ?? 'unknown planner failure'}`
       )
     }
+  }),
+  defineMethod({
+    name: 'mission.start',
+    params: MissionStartParams,
+    handler: async (params, { runtime, signal, authenticatedCallerFingerprint }) => {
+      throwIfMissionPlanningAborted(signal)
+      const planned = await planMissionWithRuntime(params, runtime, signal)
+      throwIfMissionPlanningAborted(signal)
+      const workspace = await runtime.showManagedTerminalWorkspace(params.worktree)
+      throwIfMissionPlanningAborted(signal)
+      const plan = planned.plan
+      const tasks = plan.mode === 'orchestration' ? plan.tasks : [{ key: 'mission', spec: params.text, deps: [] }]
+      const ownerFingerprint = authenticatedCallerFingerprint ?? 'runtime-local'
+      const stopToken = randomBytes(32).toString('hex')
+      const stopSecretHash = createHash('sha256').update(stopToken).digest('hex')
+      const service = runtime.getDetachedMissionRunService()
+      const run = service.create({
+        objective: plan.mode === 'orchestration' ? plan.objective : params.text,
+        worktreeId: workspace.id,
+        plannerSelection: { agent: planned.agent, model: params.model, effort: params.effort, plan },
+        workerSelection: {
+          agent: planned.agent,
+          agentCandidates: planned.agentCandidates,
+          model: params.model,
+          effort: params.effort
+        },
+        tasks,
+        maxConcurrency: plan.mode === 'orchestration' ? plan.maxConcurrency : 1,
+        ownerFingerprint,
+        stopSecretHash
+      })
+      void service.supervise(run.id).catch((error) => {
+        console.warn(`[orchestration] detached mission ${run.id} initial supervision failed`, error)
+      })
+      return {
+        runId: run.id,
+        lifecycle: 'detached',
+        worktreeId: workspace.id,
+        planner: { agent: planned.agent },
+        worker: {
+          agent: planned.agent,
+          candidates: planned.agentCandidates ?? [planned.agent],
+          model: params.model,
+          effort: params.effort
+        },
+        tasks,
+        supervisor: { state: 'queued' },
+        stopToken
+      }
+    }
+  }),
+  defineMethod({
+    name: 'mission.show',
+    params: MissionShowParams,
+    handler: (params, { runtime }) => runtime.getDetachedMissionRunService().show(params.runId)
+  }),
+  defineMethod({
+    name: 'mission.answer',
+    params: MissionAnswerParams,
+    handler: async (params, { runtime, authenticatedCallerFingerprint }) => {
+      const mission = runtime.getOrchestrationDb().readDetachedMissionRun(params.runId)
+      if (!mission || mission.owner_fingerprint !== (authenticatedCallerFingerprint ?? 'runtime-local')) {
+        throw new OrchestrationError('forbidden', 'Mission ownership check failed.')
+      }
+      await runtime.getDetachedMissionRunService().answer(params.runId, params.questionId, params.body)
+      return { runId: params.runId, accepted: true }
+    }
+  }),
+  defineMethod({
+    name: 'mission.stop',
+    params: MissionStopParams,
+    handler: async (params, { runtime, authenticatedCallerFingerprint }) => {
+      const db = runtime.getOrchestrationDb()
+      const mission = db.readDetachedMissionRun(params.runId)
+      const owner = authenticatedCallerFingerprint ?? 'runtime-local'
+      if (!mission || mission.owner_fingerprint !== owner) {
+        throw new OrchestrationError('forbidden', 'Mission ownership check failed.')
+      }
+      const hash = createHash('sha256').update(params.stopToken).digest('hex')
+      if (hash !== mission.stop_secret_hash) {
+        throw new OrchestrationError('forbidden', 'Invalid mission stop token.')
+      }
+      await runtime.getDetachedMissionRunService().stop(params.runId, params.reason)
+      return { runId: params.runId, lifecycle: 'stopped' }
+    }
   })
 ]
+
+async function planMissionWithRuntime(
+  params: z.infer<typeof MissionStartParams>,
+  runtime: OrcaRuntimeService,
+  signal?: AbortSignal
+) {
+  const settings = runtime.getClientSettings()
+  const agents = await resolveMissionAgents(params.agent, settings)
+  const startedAt = Date.now()
+  let last: OrchestrationError | null = null
+  for (const [index, agent] of agents.entries()) {
+    throwIfMissionPlanningAborted(signal)
+    try {
+      const planned = await planMissionWithAgent(params.text, agent, settings, startedAt, signal)
+      throwIfMissionPlanningAborted(signal)
+      if (!isMissionPlanningWithinTotalBudget(startedAt)) {
+        throw new OrchestrationError(
+          'mission_planner_failed',
+          'Mission planning exceeded its total time budget before durable creation.'
+        )
+      }
+      return { ...planned, agentCandidates: agents.slice(index) }
+    } catch (error) {
+      throwIfMissionPlanningAborted(signal)
+      if (
+        params.agent ||
+        !(error instanceof OrchestrationError) ||
+        error.code !== 'mission_planner_failed'
+      ) {
+        throw error
+      }
+      last = error
+      if (!canStartMissionPlanningAttempt(startedAt)) {
+        break
+      }
+    }
+  }
+  throw last ?? new OrchestrationError('mission_planner_failed', 'Mission planner failed.')
+}
 
 async function planMissionWithAgent(
   mission: string,
@@ -183,6 +327,10 @@ function canStartMissionPlanningAttempt(planningStartedAt: number): boolean {
     Date.now() - planningStartedAt + SOURCE_CONTROL_GENERATION_TIMEOUT_MS <=
     MISSION_PLANNING_TOTAL_TIMEOUT_MS
   )
+}
+
+function isMissionPlanningWithinTotalBudget(planningStartedAt: number): boolean {
+  return Date.now() - planningStartedAt <= MISSION_PLANNING_TOTAL_TIMEOUT_MS
 }
 
 function throwIfMissionPlanningAborted(signal?: AbortSignal): void {

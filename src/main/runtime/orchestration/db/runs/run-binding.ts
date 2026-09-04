@@ -23,7 +23,7 @@ export function bindRun(
   this.db.exec('BEGIN IMMEDIATE')
   try {
     const run = this.getRunRaw(params.runId)
-    if (!run || run.legacy === 1) {
+    if (!run || run.legacy === 1 || run.controller_kind !== 'terminal') {
       this.db.exec('ROLLBACK')
       return undefined
     }

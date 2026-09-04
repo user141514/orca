@@ -54,7 +54,7 @@ export function resolveMethodTimeoutMs(
       Number.isFinite(inner) && inner > 0 ? inner : WORKER_START_READINESS_WAIT_BUDGET_MS
     return Math.max(readinessBudget + LONG_POLL_CLIENT_GRACE_MS, requestTimeoutMs)
   }
-  if (method === 'mission.plan') {
+  if (method === 'mission.plan' || method === 'mission.start') {
     return Math.max(MISSION_PLAN_BUDGET_MS + LONG_POLL_CLIENT_GRACE_MS, requestTimeoutMs)
   }
   if ((method === 'orchestration.check' && isWaitingCheck(params)) || method === 'terminal.wait') {

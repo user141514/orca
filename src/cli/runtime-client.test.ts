@@ -139,6 +139,46 @@ describe.skipIf(process.platform === 'win32')('RuntimeClient', () => {
     expect(requests[3]?.compatibilityInvocationId).not.toBe(requests[1]?.compatibilityInvocationId)
   })
 
+  it('attaches the orchestration contract to non-orchestration namespace mutations', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-client-'))
+    const endpoint = join(userDataPath, 'runtime.sock')
+    const requests: Record<string, unknown>[] = []
+    const server = createServer((socket) => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+      socket.once('data', (data) => {
+        const request = JSON.parse(String(data).trim()) as Record<string, unknown>
+        requests.push(request)
+        socket.write(
+          `${JSON.stringify({
+            id: request.id,
+            ok: true,
+            result:
+              request.method === 'status.get'
+                ? { capabilities: [ORCHESTRATION_CONTRACT_RUNTIME_CAPABILITY] }
+                : {},
+            _meta: { runtimeId: 'runtime-1' }
+          })}\n`
+        )
+      })
+    })
+    servers.add(server)
+    await new Promise<void>((resolve) => server.listen(endpoint, resolve))
+    writeMetadata(userDataPath, endpoint)
+
+    const client = new RuntimeClient(userDataPath, 500)
+    await client.call(
+      'mission.start',
+      { text: 'inspect', worktree: 'id:repo::worktree' },
+      { orchestrationRequestId: 'mission_request' }
+    )
+
+    expect(requests[0]?.method).toBe('status.get')
+    expect(requests[1]?.method).toBe('mission.start')
+    expect(requests[1]?.orchestrationRequestId).toBe('mission_request')
+    expect(requests[1]?.orchestrationContractVersion).toBe(1)
+  })
+
   it('rejects an old local runtime before sending an orchestration mutation', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-client-'))
     const endpoint = join(userDataPath, 'runtime.sock')

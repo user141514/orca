@@ -57,6 +57,96 @@ describe('mission start supervisor', () => {
     vi.restoreAllMocks()
   })
 
+  it('prefers detached mission.start from an ordinary shell without resolving terminal identity', async () => {
+    const call = vi.fn(async (method: string) => {
+      if (method !== 'mission.start') {
+        throw new Error(`unexpected method: ${method}`)
+      }
+      return response({
+        runId: 'run_detached',
+        lifecycle: 'detached',
+        worktreeId: 'repo::worktree',
+        planner: { agent: 'codex' },
+        worker: { agent: 'codex', candidates: ['codex'] },
+        tasks: [{ key: 'mission', spec: 'inspect routing', deps: [] }],
+        supervisor: { state: 'queued' },
+        stopToken: 'stop_secret'
+      })
+    })
+    const client = { call, isRemote: false } as unknown as RuntimeClient
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    await MISSION_HANDLERS['mission start'](
+      makeContext(client, {
+        text: 'inspect routing',
+        worktree: 'id:repo::worktree'
+      })
+    )
+
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith(
+      'mission.start',
+      expect.objectContaining({
+        text: 'inspect routing',
+        worktree: 'id:repo::worktree'
+      }),
+      { orchestrationRequestId: undefined }
+    )
+  })
+
+  it('exposes detached mission show, answer, and stop controls without terminal identity', async () => {
+    const call = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'mission.show') {
+        return response({ runId: params?.runId, lifecycle: 'running', counts: {}, questions: [], lastError: null })
+      }
+      if (method === 'mission.answer') {
+        return response({ runId: params?.runId, accepted: true })
+      }
+      if (method === 'mission.stop') {
+        return response({ runId: params?.runId, lifecycle: 'stopped' })
+      }
+      throw new Error(`unexpected method: ${method}`)
+    })
+    const client = { call, isRemote: false } as unknown as RuntimeClient
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    expect(MISSION_HANDLERS['mission show']).toBeTypeOf('function')
+    expect(MISSION_HANDLERS['mission answer']).toBeTypeOf('function')
+    expect(MISSION_HANDLERS['mission stop']).toBeTypeOf('function')
+
+    await MISSION_HANDLERS['mission show'](
+      makeContext(client, { run: 'run_detached' })
+    )
+    await MISSION_HANDLERS['mission answer'](
+      makeContext(client, {
+        run: 'run_detached',
+        question: 'msg_question',
+        body: 'continue'
+      })
+    )
+    await MISSION_HANDLERS['mission stop'](
+      makeContext(client, {
+        run: 'run_detached',
+        'stop-token': 'stop_secret',
+        reason: 'operator stop'
+      })
+    )
+
+    expect(call).toHaveBeenNthCalledWith(1, 'mission.show', { runId: 'run_detached' })
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      'mission.answer',
+      { runId: 'run_detached', questionId: 'msg_question', body: 'continue' },
+      { orchestrationRequestId: undefined }
+    )
+    expect(call).toHaveBeenNthCalledWith(
+      3,
+      'mission.stop',
+      { runId: 'run_detached', stopToken: 'stop_secret', reason: 'operator stop' },
+      { orchestrationRequestId: undefined }
+    )
+  })
+
   it('does not activate or launch Orca before planning a mission from an existing pane', async () => {
     const openOrca = vi.fn()
     const call = vi.fn().mockRejectedValue(new Error('planner_probe'))

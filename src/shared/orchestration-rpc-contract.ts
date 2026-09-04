@@ -16,6 +16,9 @@ export const ORCHESTRATION_SKILL_COMMAND_ARGS = [
 export const ORCHESTRATION_LEGACY_RUN_ID = 'run_legacy_local'
 
 const ORCHESTRATION_MUTATION_METHODS = new Set([
+  'mission.start',
+  'mission.answer',
+  'mission.stop',
   'orchestration.runCreate',
   'orchestration.runUse',
   'orchestration.send',

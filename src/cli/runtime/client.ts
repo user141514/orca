@@ -81,9 +81,10 @@ export class RuntimeClient {
       : {}
     const envelope = {
       orchestrationCapability: options?.orchestrationCapability,
-      orchestrationContractVersion: method.startsWith('orchestration.')
-        ? ORCHESTRATION_CONTRACT_VERSION
-        : undefined,
+      orchestrationContractVersion:
+        orchestrationMutation || method.startsWith('orchestration.')
+          ? ORCHESTRATION_CONTRACT_VERSION
+          : undefined,
       orchestrationRequestId,
       ...compatibilityEnvelope
     }

@@ -22,6 +22,7 @@ export function resetAll(this: OrchestrationDb): void {
   // Why: retain mutation receipts so a lost reset response cannot replay as a new mutation.
   this.runResetTransaction(`
     DELETE FROM coordinator_runs;
+    DELETE FROM mission_runs;
     DELETE FROM decision_gates;
     DELETE FROM remote_questions;
     DELETE FROM question_threads;
@@ -52,6 +53,7 @@ export function resetTasks(this: OrchestrationDb): void {
   // question message would otherwise answer as a generic reply while legacy acknowledgment rejects it.
   this.runResetTransaction(`
     DELETE FROM coordinator_runs;
+    DELETE FROM mission_runs;
     DELETE FROM decision_gates;
     DELETE FROM remote_questions;
     UPDATE question_threads

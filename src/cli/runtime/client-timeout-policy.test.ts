@@ -148,7 +148,8 @@ describe('resolveMethodTimeoutMs', () => {
     )
   })
 
-  it('gives mission.plan its planning budget plus transport grace', () => {
+  it('gives mission planning RPCs their planning budget plus transport grace', () => {
     expect(resolveMethodTimeoutMs('mission.plan', undefined, 10_000)).toBe(130_000)
+    expect(resolveMethodTimeoutMs('mission.start', undefined, 10_000)).toBe(130_000)
   })
 })

@@ -15,6 +15,7 @@ vi.mock('../../../text-generation/commit-message-text-generation', () => ({
 }))
 
 const method = MISSION_METHODS.find((candidate) => candidate.name === 'mission.plan')!
+const startMethod = MISSION_METHODS.find((candidate) => candidate.name === 'mission.start')!
 
 describe('mission.plan', () => {
   let runtime: OrcaRuntimeService
@@ -59,6 +60,72 @@ describe('mission.plan', () => {
   async function call(params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     return method.handler(method.params!.parse(params), { runtime, signal } as RpcContext)
   }
+
+  it('aborts mission.start before durable creation when the request is already cancelled', async () => {
+    setup()
+    const controller = new AbortController()
+    controller.abort()
+    vi.mocked(generateTextFromPrompt).mockResolvedValue({
+      success: true,
+      text: '{"mode":"single-agent"}',
+      agentLabel: 'Pi'
+    })
+    const create = vi.fn(() => {
+      throw new Error('durable create must not run after request cancellation')
+    })
+    vi.spyOn(runtime, 'getDetachedMissionRunService').mockReturnValue({
+      create,
+      supervise: vi.fn()
+    } as unknown as ReturnType<OrcaRuntimeService['getDetachedMissionRunService']>)
+
+    await expect(
+      startMethod.handler(
+        startMethod.params!.parse({
+          text: 'Inspect this task.',
+          worktree: 'id:repo::worktree',
+          agent: 'pi'
+        }),
+        { runtime, signal: controller.signal } as RpcContext
+      )
+    ).rejects.toMatchObject({ code: 'request_aborted' })
+
+    expect(generateTextFromPrompt).not.toHaveBeenCalled()
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('does not durably create a mission when planning exceeds the total budget', async () => {
+    setup()
+    let now = 1_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    vi.mocked(generateTextFromPrompt).mockImplementationOnce(async () => {
+      now += 120_001
+      return {
+        success: true,
+        text: '{"mode":"single-agent"}',
+        agentLabel: 'Pi'
+      }
+    })
+    const create = vi.fn(() => {
+      throw new Error('durable create must not run after planning budget exhaustion')
+    })
+    vi.spyOn(runtime, 'getDetachedMissionRunService').mockReturnValue({
+      create,
+      supervise: vi.fn()
+    } as unknown as ReturnType<OrcaRuntimeService['getDetachedMissionRunService']>)
+
+    await expect(
+      startMethod.handler(
+        startMethod.params!.parse({
+          text: 'Inspect this task.',
+          worktree: 'id:repo::worktree',
+          agent: 'pi'
+        }),
+        { runtime } as RpcContext
+      )
+    ).rejects.toMatchObject({ code: 'mission_planner_failed' })
+
+    expect(create).not.toHaveBeenCalled()
+  })
 
   it('plans with the selected agent and returns the parsed orchestration plan', async () => {
     setup()

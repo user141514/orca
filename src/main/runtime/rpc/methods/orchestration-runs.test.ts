@@ -127,6 +127,28 @@ describe('orchestration RPC methods', () => {
       ).rejects.toMatchObject({ code: 'run_not_found' })
     })
 
+    it('rejects run-use for a detached mission Run', async () => {
+      setup(false)
+      vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue(coordinatorPaneKey)
+      const mission = db.createDetachedMissionRun({
+        objective: 'runtime-owned mission',
+        worktreeId: null,
+        plannerSelectionJson: '{}',
+        workerSelectionJson: '{}',
+        maxConcurrency: 1,
+        ownerFingerprint: 'owner_fp',
+        stopSecretHash: 'stop_hash'
+      })
+
+      await expect(
+        call('orchestration.runUse', { id: mission.id, from: 'term_coord' })
+      ).rejects.toMatchObject({ code: 'run_not_found' })
+      expect(db.getRun(mission.id)).toMatchObject({
+        coordinator_handle: null,
+        coordinator_pane_key: null
+      })
+    })
+
     it('requires an explicit binding before task mutation', async () => {
       setup(false)
       vi.spyOn(runtime, 'getTerminalPaneKey').mockReturnValue(coordinatorPaneKey)

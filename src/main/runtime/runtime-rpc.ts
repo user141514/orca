@@ -455,7 +455,7 @@ export function classifyRuntimeLongPoll(request: RpcRequest): RuntimeLongPollCla
   if (request.method === 'browser.clientHost.attach') {
     return 'browser-host'
   }
-  if (request.method === 'mission.plan') {
+  if (request.method === 'mission.plan' || request.method === 'mission.start') {
     return 'mission-plan'
   }
   if (request.method === 'terminal.wait') {

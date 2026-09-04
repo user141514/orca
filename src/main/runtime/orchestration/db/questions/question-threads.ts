@@ -70,6 +70,12 @@ export function getQuestionRaw(this: OrchestrationDb, messageId: string): Questi
     | undefined
 }
 
+export function listQuestions(this: OrchestrationDb, runId: string): QuestionRow[] {
+  return this.db
+    .prepare('SELECT * FROM question_threads WHERE run_id = ? ORDER BY created_at, message_id')
+    .all(runId) as QuestionRow[]
+}
+
 export function answerQuestion(
   this: OrchestrationDb,
   params: {
@@ -161,6 +167,7 @@ export type QuestionThreadsMethods = {
   createQuestion: typeof createQuestion
   getQuestion: typeof getQuestion
   getQuestionRaw: typeof getQuestionRaw
+  listQuestions: typeof listQuestions
   answerQuestion: typeof answerQuestion
   closeQuestionsForDispatch: typeof closeQuestionsForDispatch
 }
@@ -170,6 +177,7 @@ export function attachQuestionThreads(ctor: { prototype: object }): void {
     createQuestion,
     getQuestion,
     getQuestionRaw,
+    listQuestions,
     answerQuestion,
     closeQuestionsForDispatch
   })
