@@ -20188,6 +20188,50 @@ export class OrcaRuntimeService {
     return pty?.launchAgent ?? pty?.foregroundAgent ?? null
   }
 
+  private canResolveTuiIdleForCurrentLaunch(
+    handle: string,
+    ptyId: string | null | undefined
+  ): boolean {
+    if (!ptyId) {
+      return true
+    }
+    const pty = this.ptysById.get(ptyId)
+    if (!pty || pty.launchAgent !== 'pi') {
+      return true
+    }
+    if (this.store?.getSettings?.().agentStatusHooksEnabled === false) {
+      return true
+    }
+    if (!this.getAgentProviderSessionSnapshotFn || !this.attestAgentHookCompatibilityAuthorityFn) {
+      // Embedders that do not wire the hook server retain the legacy readiness contract.
+      return true
+    }
+    const paneKey = pty.paneKey ?? this.getPaneKeyForTerminalHandle(handle)
+    const launchToken = pty.launchToken?.trim()
+    if (!paneKey || !launchToken) {
+      return false
+    }
+    const rows =
+      this.getAgentProviderSessionRowsForPaneFn?.(paneKey) ??
+      this.getAgentProviderSessionSnapshotFn().filter((entry) => entry.paneKey === paneKey)
+    const hasProviderSession = rows.some(
+      (entry) =>
+        entry.agentType === 'pi' &&
+        entry.providerSession != null &&
+        entry.restoredUnconfirmed !== true
+    )
+    if (!hasProviderSession) {
+      return false
+    }
+    const attestation = this.attestAgentHookCompatibilityAuthorityFn({
+      paneKey,
+      launchTokenHash: createHash('sha256').update(launchToken).digest('hex'),
+      connectionId: pty.connectionId,
+      terminalProvenance: 'current_runtime'
+    })
+    return attestation?.paneKey === paneKey && attestation.source === 'current_hook'
+  }
+
   private assertAgentPromptPermissionSafe(
     baseline: AgentPromptActivity,
     current: AgentPromptActivity
@@ -20347,13 +20391,18 @@ export class OrcaRuntimeService {
       if (condition === 'tui-idle' && ptyBlockedReason) {
         return buildPtyTerminalWaitBlockedResult(handle, condition, pty.pty, ptyBlockedReason)
       }
-      if (condition === 'tui-idle' && pty.pty.lastAgentStatus === 'idle') {
+      if (
+        condition === 'tui-idle' &&
+        pty.pty.lastAgentStatus === 'idle' &&
+        this.canResolveTuiIdleForCurrentLaunch(handle, pty.pty.ptyId)
+      ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
       if (
         condition === 'tui-idle' &&
         (this.getAdoptedPtyExplicitIdleStatus(pty.pty) === 'idle' ||
-          isKnownReadyPromptPreview(ptyWaitText))
+          isKnownReadyPromptPreview(ptyWaitText)) &&
+        this.canResolveTuiIdleForCurrentLaunch(handle, pty.pty.ptyId)
       ) {
         return buildPtyTerminalWaitResult(handle, condition, pty.pty)
       }
@@ -20407,11 +20456,15 @@ export class OrcaRuntimeService {
               waiter,
               buildPtyTerminalWaitBlockedResult(handle, condition, live.pty, blockedReason)
             )
-          } else if (live.pty.lastAgentStatus === 'idle') {
+          } else if (
+            live.pty.lastAgentStatus === 'idle' &&
+            this.canResolveTuiIdleForCurrentLaunch(handle, live.pty.ptyId)
+          ) {
             this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else if (
-            this.getAdoptedPtyExplicitIdleStatus(live.pty) === 'idle' ||
-            isKnownReadyPromptPreview(livePtyWaitText)
+            (this.getAdoptedPtyExplicitIdleStatus(live.pty) === 'idle' ||
+              isKnownReadyPromptPreview(livePtyWaitText)) &&
+            this.canResolveTuiIdleForCurrentLaunch(handle, live.pty.ptyId)
           ) {
             this.resolveWaiter(waiter, buildPtyTerminalWaitResult(handle, condition, live.pty))
           } else {
@@ -20437,14 +20490,19 @@ export class OrcaRuntimeService {
     // detection that powers the renderer's "Task complete" notifications.
     // Why: only 'idle' satisfies tui-idle, not 'permission'. Permission means the
     // agent is blocked on user approval, not finished with its task.
-    if (condition === 'tui-idle' && leaf.lastAgentStatus === 'idle') {
+    if (
+      condition === 'tui-idle' &&
+      leaf.lastAgentStatus === 'idle' &&
+      this.canResolveTuiIdleForCurrentLaunch(handle, leaf.ptyId)
+    ) {
       return buildTerminalWaitResult(handle, condition, leaf)
     }
     if (condition === 'tui-idle') {
       const fastPathTitle = leaf.paneTitle ?? this.tabs.get(leaf.tabId)?.title
       if (
-        (fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
-        isKnownReadyPromptPreview(leafWaitText)
+        ((fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
+          isKnownReadyPromptPreview(leafWaitText)) &&
+        this.canResolveTuiIdleForCurrentLaunch(handle, leaf.ptyId)
       ) {
         return buildTerminalWaitResult(handle, condition, leaf)
       }
@@ -20509,7 +20567,10 @@ export class OrcaRuntimeService {
               waiter,
               buildTerminalWaitBlockedResult(handle, condition, live.leaf, blockedReason)
             )
-          } else if (live.leaf.lastAgentStatus === 'idle') {
+          } else if (
+            live.leaf.lastAgentStatus === 'idle' &&
+            this.canResolveTuiIdleForCurrentLaunch(handle, live.leaf.ptyId)
+          ) {
             // Why: don't clear lastAgentStatus here. It's a factual record of the
             // last detected OSC state, not a one-shot signal. Clearing it causes
             // subsequent tui-idle waiters to hang even though the agent is idle —
@@ -20521,8 +20582,9 @@ export class OrcaRuntimeService {
             // preview/title until the waiter resolves or hits its timeout.
             const fastPathTitle = live.leaf.paneTitle ?? this.tabs.get(live.leaf.tabId)?.title
             if (
-              (fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
-              isKnownReadyPromptPreview(liveLeafWaitText)
+              ((fastPathTitle && detectExplicitIdleStatusFromTitle(fastPathTitle) === 'idle') ||
+                isKnownReadyPromptPreview(liveLeafWaitText)) &&
+              this.canResolveTuiIdleForCurrentLaunch(handle, live.leaf.ptyId)
             ) {
               this.resolveWaiter(waiter, buildTerminalWaitResult(handle, condition, live.leaf))
             } else {

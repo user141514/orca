@@ -25,7 +25,10 @@ import type { WorkspaceSessionState } from '../../shared/workspace-session-state
 import type { WorkspaceLineage, WorktreeLineage } from '../../shared/worktree/lineage-types'
 import type { WorktreeMeta } from '../../shared/worktree/meta-types'
 import type { Worktree } from '../../shared/worktree/types'
-import { AGENT_STATUS_STALE_AFTER_MS } from '../../shared/agent-status-types'
+import {
+  AGENT_STATUS_STALE_AFTER_MS,
+  type AgentStatusIpcPayload
+} from '../../shared/agent-status-types'
 import {
   reviewHeadRemoteRefComponent,
   REVIEW_HEAD_FETCH_TIMEOUT_MS
@@ -1291,6 +1294,10 @@ class InMemoryOrchestrationMessages {
         message.delivered_at = null
       }
     }
+  }
+
+  readDetachedMissionRun(_runId: string): undefined {
+    return undefined
   }
 
   close(): void {}
@@ -16843,6 +16850,72 @@ describe('OrcaRuntimeService', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('waits for the current Pi launch provider session before accepting a ready title', async () => {
+    const rows: AgentStatusIpcPayload[] = []
+    let currentLaunchAttested = false
+    const attestAgentHookCompatibilityAuthority = vi.fn((candidate: { paneKey: string }) =>
+      currentLaunchAttested ? { paneKey: candidate.paneKey, source: 'current_hook' as const } : null
+    )
+    const spawn = vi.fn().mockResolvedValue({ id: 'pty-pi-ready' })
+    const runtime = new OrcaRuntimeService(store, undefined, {
+      getAgentProviderSessionSnapshot: () => rows,
+      attestAgentHookCompatibilityAuthority
+    })
+    runtime.setPtyController({
+      spawn,
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null
+    })
+    const terminal = await runtime.createTerminal(`path:${TEST_WORKTREE_PATH}`, {
+      command: 'pi',
+      launchAgent: 'pi',
+      launchConfig: { agentCommand: 'pi', agentArgs: '', agentEnv: {} },
+      title: 'Pi'
+    })
+    const spawnEnv =
+      (spawn.mock.calls[0]?.[0] as { env?: Record<string, string> } | undefined)?.env ?? {}
+    runtime.onPtyData('pty-pi-ready', '\x1b]0;Pi ready\x07', Date.now())
+
+    await expect(
+      runtime.waitForTerminal(terminal.handle, { condition: 'tui-idle', timeoutMs: 25 })
+    ).rejects.toThrow('timeout')
+
+    rows.push({
+      paneKey: spawnEnv.ORCA_PANE_KEY,
+      state: 'done',
+      prompt: '',
+      agentType: 'pi',
+      connectionId: null,
+      receivedAt: Date.now(),
+      stateStartedAt: Date.now(),
+      tabId: spawnEnv.ORCA_TAB_ID,
+      worktreeId: TEST_WORKTREE_ID,
+      providerSession: { key: 'session_id', id: 'pi-ready-session' },
+      providerSessionOnly: true
+    })
+
+    await expect(
+      runtime.waitForTerminal(terminal.handle, { condition: 'tui-idle', timeoutMs: 25 })
+    ).rejects.toThrow('timeout')
+
+    currentLaunchAttested = true
+    await expect(
+      runtime.waitForTerminal(terminal.handle, { condition: 'tui-idle', timeoutMs: 1_000 })
+    ).resolves.toMatchObject({
+      handle: terminal.handle,
+      condition: 'tui-idle',
+      status: 'running'
+    })
+    expect(attestAgentHookCompatibilityAuthority).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paneKey: spawnEnv.ORCA_PANE_KEY,
+        launchTokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        terminalProvenance: 'current_runtime'
+      })
+    )
   })
 
   it('resolves tui-idle from a Codex ready prompt preview', async () => {
