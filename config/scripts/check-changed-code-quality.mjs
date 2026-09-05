@@ -6,6 +6,13 @@ import { pathToFileURL } from 'node:url'
 import { resolvePullRequestDiffBase } from './git-pull-request-diff-base.mjs'
 
 const SOURCE_FILE_PATTERN = /\.(?:[cm]?[jt]sx?)$/
+export function resolveOxlintInvocation(root) {
+  return {
+    command: process.execPath,
+    argsPrefix: [path.join(root, 'node_modules', 'oxlint', 'bin', 'oxlint')]
+  }
+}
+
 export const OXLINT_SCANS = [
   {
     // Why: no --config, so Oxlint keeps discovering nested configs. Pinning the root
@@ -264,8 +271,8 @@ function printDiagnostic(diagnostic, root) {
 }
 
 function runOxlintScan(root, scan, files) {
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-  const result = spawnSync(pnpm, ['exec', 'oxlint', ...scan.args, '--format', 'json', ...files], {
+  const { command, argsPrefix } = resolveOxlintInvocation(root)
+  const result = spawnSync(command, [...argsPrefix, ...scan.args, '--format', 'json', ...files], {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 128 * 1024 * 1024

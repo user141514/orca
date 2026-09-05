@@ -1,13 +1,25 @@
+import path from 'node:path'
+import process from 'node:process'
 import { describe, expect, it } from 'vitest'
-import {
+import * as changedCodeQuality from './check-changed-code-quality.mjs'
+
+const {
   OXLINT_SCANS,
   diagnosticTouchesAddedLines,
   isMovedCode,
   overlapsAddedLines,
   parseAddedLineRanges
-} from './check-changed-code-quality.mjs'
+} = changedCodeQuality
 
 describe('changed-code quality line matching', () => {
+  it('runs the project-local oxlint Node entrypoint without requiring a package-manager shim', () => {
+    expect(changedCodeQuality.resolveOxlintInvocation).toBeTypeOf('function')
+    expect(changedCodeQuality.resolveOxlintInvocation(process.cwd())).toEqual({
+      command: process.execPath,
+      argsPrefix: [path.join(process.cwd(), 'node_modules', 'oxlint', 'bin', 'oxlint')]
+    })
+  })
+
   it('parses added and replaced hunk ranges while ignoring deletions', () => {
     const ranges = parseAddedLineRanges(
       ['@@ -10,2 +10,3 @@', '@@ -20 +21 @@', '@@ -40,4 +42,0 @@', '@@ -50 +48,2 @@'].join('\n')
