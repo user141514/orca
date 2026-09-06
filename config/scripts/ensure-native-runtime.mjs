@@ -77,7 +77,7 @@ function ensureNodeRuntime() {
     `[native-runtime] ${formatRuntimeLabel('node')} cannot load native modules; rebuilding ${failedModules.join(', ')} for Node.`
   )
   printCheckError(initial)
-  runPnpm(['rebuild', ...failedModules])
+  rebuildNodeNativeModules(failedModules)
   verifyNodeRuntimeAfterRebuild()
 }
 
@@ -351,16 +351,54 @@ function getWindowsBuildNumber() {
   return match && match.length === 4 ? Number.parseInt(match[3], 10) : 0
 }
 
+function rebuildNodeNativeModules(moduleNames) {
+  if (process.platform !== 'win32') {
+    runPnpm(['rebuild', ...moduleNames])
+    return
+  }
+
+  if (moduleNames.includes('node-pty')) {
+    runPnpm(['rebuild', 'node-pty'])
+  }
+  for (const moduleName of moduleNames) {
+    if (moduleName !== 'node-pty') {
+      runNodeGypRebuild(moduleName)
+    }
+  }
+}
+
+function runNodeGypRebuild(moduleName) {
+  const moduleDir = resolve(projectDir, 'node_modules', ...moduleName.split('/'))
+  const nodeGypScript = resolve(projectDir, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js')
+  const result = spawnSync(process.execPath, [nodeGypScript, 'rebuild'], {
+    cwd: moduleDir,
+    stdio: 'inherit'
+  })
+
+  if (result.error || result.status !== 0) {
+    console.error(`[native-runtime] node-gyp rebuild failed for ${moduleName}.`)
+    if (result.error) {
+      console.error(formatError(result.error))
+    }
+    process.exit(result.status ?? 1)
+  }
+}
+
 function runPnpm(args) {
-  const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-  const result = spawnSync(command, args, {
+  const command = process.platform === 'win32' ? 'corepack.cmd' : 'pnpm'
+  const commandArgs = process.platform === 'win32' ? ['pnpm', ...args] : args
+  const result = spawnSync(command, commandArgs, {
     cwd: projectDir,
+    env:
+      process.platform === 'win32'
+        ? { ...process.env, npm_config_build_from_source: 'true' }
+        : process.env,
     stdio: 'inherit',
     shell: process.platform === 'win32'
   })
 
   if (result.error || result.status !== 0) {
-    console.error(`[native-runtime] ${command} ${args.join(' ')} failed.`)
+    console.error(`[native-runtime] ${command} ${commandArgs.join(' ')} failed.`)
     if (result.error) {
       console.error(formatError(result.error))
     }

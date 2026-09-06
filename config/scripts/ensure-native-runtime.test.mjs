@@ -52,6 +52,76 @@ describe('ensure-native-runtime', () => {
     }
   })
 
+  it.skipIf(process.platform !== 'win32')(
+    'rebuilds through Corepack when Windows has no global pnpm.cmd shim',
+    () => {
+      const projectDir = mkTempProject()
+
+      try {
+        const scriptPath = join(projectDir, 'config', 'scripts', 'ensure-native-runtime.mjs')
+        const logPath = join(projectDir, 'native-runtime.log')
+        const markerPath = join(projectDir, 'rebuilt.marker')
+        const binDir = join(projectDir, 'bin')
+        copyFileSync(sourceScriptPath, scriptPath)
+        writeFakeNativeModules(projectDir)
+        writeFakePnpm(binDir)
+        rmSync(join(binDir, 'pnpm.cmd'))
+
+        const result = spawnSync(process.execPath, [scriptPath, '--runtime=node'], {
+          cwd: projectDir,
+          encoding: 'utf8',
+          env: envWithPrependedPath(binDir, {
+            ORCA_NATIVE_TEST_LOG: logPath,
+            ORCA_NATIVE_TEST_MARKER: markerPath
+          })
+        })
+
+        expect(result.status, result.stderr).toBe(0)
+        const log = readFileSync(logPath, 'utf8')
+        expect(log).toContain('pnpm rebuild node-pty\n')
+        expect(log).toContain('build_from_source=true\n')
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it.skipIf(process.platform !== 'win32')(
+    'rebuilds Windows native modules without install hooks through project-local node-gyp',
+    () => {
+      const projectDir = mkTempProject()
+
+      try {
+        const scriptPath = join(projectDir, 'config', 'scripts', 'ensure-native-runtime.mjs')
+        const logPath = join(projectDir, 'native-runtime.log')
+        const markerPath = join(projectDir, 'rebuilt.marker')
+        const registryMarkerPath = join(projectDir, 'registry-rebuilt.marker')
+        const binDir = join(projectDir, 'bin')
+        copyFileSync(sourceScriptPath, scriptPath)
+        writeFakeNativeModules(projectDir)
+        writeFakePnpm(binDir)
+        writeFakeNodeGyp(projectDir)
+
+        const result = spawnSync(process.execPath, [scriptPath, '--runtime=node'], {
+          cwd: projectDir,
+          encoding: 'utf8',
+          env: envWithPrependedPath(binDir, {
+            ORCA_NATIVE_TEST_LOG: logPath,
+            ORCA_NATIVE_TEST_MARKER: markerPath,
+            ORCA_NATIVE_REGISTRY_TEST_MARKER: registryMarkerPath
+          })
+        })
+
+        expect(result.status, result.stderr).toBe(0)
+        const log = readFileSync(logPath, 'utf8')
+        expect(log).toContain('pnpm rebuild node-pty\n')
+        expect(log).toContain('node-gyp windows-native-registry rebuild\n')
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true })
+      }
+    }
+  )
+
   it.skipIf(process.platform === 'win32')(
     'rebuilds patched node-pty artifacts even when the Node load check passes',
     () => {
@@ -197,10 +267,19 @@ exports.loadNativeModule = function loadNativeModule(nativeName) {
   if (!markerExists) {
     throw new Error('ABI mismatch sentinel')
   }
+  return {
+    dir: '../prebuilds/' + process.platform + '-' + process.arch + '/',
+    module: {
+      listJobProcessIds() {},
+      terminateJob() {},
+      assignCurrentProcessToJob() {}
+    }
+  }
 }
 `
   )
   writeFakeWindowsRegistry(projectDir)
+  writeFakeWindowsProcessTree(projectDir)
 }
 
 function writeLoadableNativeModules(projectDir, { nativeDir = null } = {}) {
@@ -223,6 +302,7 @@ exports.loadNativeModule = function loadNativeModule(nativeName) {
 `
   )
   writeFakeWindowsRegistry(projectDir)
+  writeFakeWindowsProcessTree(projectDir)
 }
 
 function writeFakeWindowsRegistry(projectDir) {
@@ -233,8 +313,25 @@ function writeFakeWindowsRegistry(projectDir) {
   mkdirSync(registryDir, { recursive: true })
   writeFileSync(
     join(registryDir, 'index.js'),
-    'exports.HK = { CU: 0x80000001 }; exports.getRegistryKey = () => ({})\n'
+    `
+const { existsSync } = require('node:fs')
+exports.HK = { CU: 0x80000001 }
+exports.getRegistryKey = () => {
+  const marker = process.env.ORCA_NATIVE_REGISTRY_TEST_MARKER
+  if (marker && !existsSync(marker)) throw new Error('registry ABI mismatch sentinel')
+  return {}
+}
+`
   )
+}
+
+function writeFakeWindowsProcessTree(projectDir) {
+  if (process.platform !== 'win32') {
+    return
+  }
+  const processTreeDir = join(projectDir, 'node_modules', '@vscode', 'windows-process-tree')
+  mkdirSync(processTreeDir, { recursive: true })
+  writeFileSync(join(processTreeDir, 'index.js'), 'module.exports = {}\n')
 }
 
 function writeNodePtyPatchFile(projectDir) {
@@ -251,6 +348,23 @@ function writePatchedNodePtyBuildArtifacts(projectDir) {
   }
 }
 
+function writeFakeNodeGyp(projectDir) {
+  const nodeGypBinDir = join(projectDir, 'node_modules', 'node-gyp', 'bin')
+  mkdirSync(nodeGypBinDir, { recursive: true })
+  writeFileSync(
+    join(nodeGypBinDir, 'node-gyp.js'),
+    `
+const { appendFileSync, writeFileSync } = require('node:fs')
+const { basename } = require('node:path')
+appendFileSync(
+  process.env.ORCA_NATIVE_TEST_LOG,
+  \`node-gyp \${basename(process.cwd())} \${process.argv.slice(2).join(' ')}\\n\`
+)
+writeFileSync(process.env.ORCA_NATIVE_REGISTRY_TEST_MARKER, 'rebuilt')
+`
+  )
+}
+
 function writeFakePnpm(binDir) {
   mkdirSync(binDir, { recursive: true })
   const shimPath = join(binDir, 'pnpm-shim.cjs')
@@ -259,7 +373,13 @@ function writeFakePnpm(binDir) {
     `
 const { appendFileSync, writeFileSync } = require('node:fs')
 
-appendFileSync(process.env.ORCA_NATIVE_TEST_LOG, \`pnpm \${process.argv.slice(2).join(' ')}\\n\`)
+const args = process.argv.slice(2)
+if (args[0] === 'pnpm') args.shift()
+appendFileSync(process.env.ORCA_NATIVE_TEST_LOG, \`pnpm \${args.join(' ')}\\n\`)
+appendFileSync(
+  process.env.ORCA_NATIVE_TEST_LOG,
+  \`build_from_source=\${process.env.npm_config_build_from_source ?? ''}\\n\`
+)
 writeFileSync(process.env.ORCA_NATIVE_TEST_MARKER, 'rebuilt')
 `
   )
@@ -267,8 +387,7 @@ writeFileSync(process.env.ORCA_NATIVE_TEST_MARKER, 'rebuilt')
   const posixPnpmPath = join(binDir, 'pnpm')
   writeFileSync(posixPnpmPath, `#!/usr/bin/env node\nrequire(${JSON.stringify(shimPath)})\n`)
   chmodSync(posixPnpmPath, 0o755)
-  writeFileSync(
-    join(binDir, 'pnpm.cmd'),
-    `@echo off\r\n"${process.execPath}" "%~dp0\\pnpm-shim.cjs" %*\r\n`
-  )
+  const windowsShim = `@echo off\r\n"${process.execPath}" "%~dp0\\pnpm-shim.cjs" %*\r\n`
+  writeFileSync(join(binDir, 'pnpm.cmd'), windowsShim)
+  writeFileSync(join(binDir, 'corepack.cmd'), windowsShim)
 }
