@@ -64,9 +64,14 @@ function installWindowsSubCli(source, installDir, environment) {
 
   const existing = readExistingWindowsWrapper(commandPath)
   if (existing !== null) {
-    return existing === wrapper
-      ? { status: 'already-installed', commandPath }
-      : { status: 'conflict', commandPath }
+    if (existing === wrapper) {
+      return { status: 'already-installed', commandPath }
+    }
+    if (!isManagedWindowsWrapper(existing)) {
+      return { status: 'conflict', commandPath }
+    }
+    writeFileSync(commandPath, wrapper, 'utf8')
+    return { status: 'updated', commandPath }
   }
 
   writeFileSync(commandPath, wrapper, 'utf8')
@@ -83,7 +88,17 @@ function getWindowsUserDataPath(source, environment) {
 function renderWindowsSubCliWrapper(source, userDataPath) {
   const escapedSource = source.replaceAll('%', '%%')
   const escapedUserDataPath = userDataPath.replaceAll('%', '%%')
-  return `@echo off\r\nset "ORCA_USER_DATA_PATH=${escapedUserDataPath}"\r\nset "ORCA_DEV_USER_DATA_PATH=${escapedUserDataPath}"\r\nnode "${escapedSource}" %*\r\n`
+  return `@echo off\r\nrem ORCA_SUB_MANAGED_WRAPPER=1\r\nset "ORCA_USER_DATA_PATH=${escapedUserDataPath}"\r\nset "ORCA_DEV_USER_DATA_PATH=${escapedUserDataPath}"\r\nnode "${escapedSource}" %*\r\n`
+}
+
+function isManagedWindowsWrapper(wrapper) {
+  const lines = wrapper.replaceAll('\r\n', '\n').trimEnd().split('\n')
+  return (
+    lines[0]?.toLowerCase() === '@echo off' &&
+    lines.some((line) => line.startsWith('set "ORCA_USER_DATA_PATH=')) &&
+    lines.some((line) => line.startsWith('set "ORCA_DEV_USER_DATA_PATH=')) &&
+    lines.some((line) => /^(?:node|"[^"]*node(?:\.exe)?") ".*orca-sub\.mjs" %\*$/i.test(line))
+  )
 }
 
 function readExistingWindowsWrapper(commandPath) {

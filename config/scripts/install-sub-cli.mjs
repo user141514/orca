@@ -23,6 +23,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(scriptPath
   const result = installSubCli()
   if (result.status === 'installed') {
     console.log(`[orca-sub] Installed ${result.commandPath} → ${defaultSource}`)
+  } else if (result.status === 'updated') {
+    console.log(`[orca-sub] Updated ${result.commandPath} → ${defaultSource}`)
   } else if (result.status === 'already-installed') {
     console.log(`[orca-sub] ${result.commandPath} already points to the local subagent CLI.`)
   } else if (result.status === 'conflict') {

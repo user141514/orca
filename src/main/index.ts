@@ -158,6 +158,7 @@ import {
   installDevParentWatchdog,
   isDevParentShutdownRequested,
   patchPackagedProcessPath,
+  shouldCoupleDevRuntimeToParent,
   shouldInstallManagedHooks
 } from './startup/configure-process'
 import {
@@ -931,8 +932,11 @@ if (hasSingleInstanceLock) {
   // request in. A host without them rejects speech calls rather than pretending.
   setSpeechServiceFactories(electronSpeechServiceFactories)
   setWorktreeWatcherRemoval(desktopWorktreeWatcherRemoval)
-  // Why: couple to dev-parent only for electron-vite desktop runs; `orca serve`'s parent (CLI shim/background shell) isn't the intended server lifetime.
-  const shouldCoupleToDevParent = is.dev && !isServeMode
+  // Why: only the long-lived electron-vite supervisor owns a dev desktop lifecycle; CLI-launched dev runtimes must outlive the short-lived CLI process.
+  const shouldCoupleToDevParent = shouldCoupleDevRuntimeToParent({
+    isDev: is.dev,
+    isServeMode
+  })
   installDevParentDisconnectQuit(shouldCoupleToDevParent)
   installDevParentWatchdog(shouldCoupleToDevParent)
   installDevParentSignalQuit(shouldCoupleToDevParent)

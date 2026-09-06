@@ -383,8 +383,26 @@ describe('agent prompt render gate on a ConPTY host', () => {
     await stalled
   })
 
-  it('still settles a normal prompt on the marker plus one quiet window', async () => {
+  it('gives a Windows agent an extra composer settlement second after the render marker', async () => {
     useHostPlatform('win32')
+    vi.useFakeTimers()
+    const { runtime, handle, submitTimes } = await createSettlementRuntime()
+    const submission = runtime.sendTerminalAgentPrompt(handle, 'review this')
+    const stalled = expect(submission).rejects.toThrow('agent_prompt_stalled')
+
+    await vi.advanceTimersByTimeAsync(2_599)
+    expect(submitTimes).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(submitTimes).toHaveLength(1)
+    expect(submitTimes[0]).toBeGreaterThanOrEqual(2_600)
+    expect(submitTimes[0]).toBeLessThan(2_700)
+
+    await vi.runAllTimersAsync()
+    await stalled
+  })
+
+  it('keeps the existing render quiet window on non-Windows hosts', async () => {
+    useHostPlatform('darwin')
     vi.useFakeTimers()
     const { runtime, handle, submitTimes } = await createSettlementRuntime()
     const submission = runtime.sendTerminalAgentPrompt(handle, 'review this')
@@ -392,7 +410,6 @@ describe('agent prompt render gate on a ConPTY host', () => {
 
     await vi.runAllTimersAsync()
     expect(submitTimes).toHaveLength(1)
-    // 100 ms marker + 1_500 ms quiet: a sub-chunk paste adds no measurable ingest.
     expect(submitTimes[0]).toBeGreaterThanOrEqual(1_600)
     expect(submitTimes[0]).toBeLessThan(1_700)
     await stalled

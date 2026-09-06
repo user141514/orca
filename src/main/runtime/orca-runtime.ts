@@ -2139,6 +2139,7 @@ const BRACKETED_PASTE_QUIET_MS = 1500
 // redraw cadence, and a shorter window submits mid-redraw.
 const AGENT_PROMPT_RENDER_TIMEOUT_MS = 8000
 const AGENT_PROMPT_RENDER_QUIET_MS = 1500
+const WINDOWS_AGENT_PROMPT_RENDER_QUIET_MS = 2500
 // Why: Claude and Codex emit show-cursor after accepting bracketed paste.
 const AGENT_PROMPT_RENDER_MARKER = '\x1b[?25h'
 
@@ -20311,7 +20312,11 @@ export class OrcaRuntimeService {
       if (quietTimer) {
         clearTimeout(quietTimer)
       }
-      quietTimer = setTimeout(finish, AGENT_PROMPT_RENDER_QUIET_MS)
+      const quietMs =
+        this.getPtyWriteHostPlatform(ptyId) === 'win32'
+          ? WINDOWS_AGENT_PROMPT_RENDER_QUIET_MS
+          : AGENT_PROMPT_RENDER_QUIET_MS
+      quietTimer = setTimeout(finish, quietMs)
     }
     const armHardTimer = (): void => {
       if (hardTimer) {

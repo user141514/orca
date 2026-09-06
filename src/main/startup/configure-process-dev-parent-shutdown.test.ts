@@ -13,6 +13,29 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('shouldCoupleDevRuntimeToParent', () => {
+  it('keeps pnpm dev coupled but lets CLI-launched dev runtimes outlive the CLI', async () => {
+    const { shouldCoupleDevRuntimeToParent } = await import('./configure-process')
+
+    expect(
+      shouldCoupleDevRuntimeToParent({ isDev: true, isServeMode: false, env: {} })
+    ).toBe(true)
+    expect(
+      shouldCoupleDevRuntimeToParent({
+        isDev: true,
+        isServeMode: false,
+        env: { ORCA_DEV_CLI_INVOCATION: '1' }
+      })
+    ).toBe(false)
+    expect(
+      shouldCoupleDevRuntimeToParent({ isDev: true, isServeMode: true, env: {} })
+    ).toBe(false)
+    expect(
+      shouldCoupleDevRuntimeToParent({ isDev: false, isServeMode: false, env: {} })
+    ).toBe(false)
+  })
+})
+
 describe('installDevParentDisconnectQuit', () => {
   it('quits the dev app when the supervising IPC channel disconnects', async () => {
     const { app } = await import('electron')

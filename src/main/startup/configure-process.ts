@@ -204,6 +204,18 @@ export function shouldInstallManagedHooks(isDev: boolean): boolean {
   return true
 }
 
+export function shouldCoupleDevRuntimeToParent({
+  isDev,
+  isServeMode,
+  env = process.env
+}: {
+  isDev: boolean
+  isServeMode: boolean
+  env?: NodeJS.ProcessEnv
+}): boolean {
+  return isDev && !isServeMode && env.ORCA_DEV_CLI_INVOCATION !== '1'
+}
+
 export function installDevParentDisconnectQuit(isDev: boolean): void {
   if (!isDev || typeof process.send !== 'function') {
     return

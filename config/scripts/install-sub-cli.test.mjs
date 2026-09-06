@@ -97,6 +97,53 @@ describe('installSubCli', () => {
     })
   })
 
+  it('updates a previously managed Windows wrapper to the current checkout', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'orca-sub-install-'))
+    const installDir = path.join(root, 'bin')
+    const oldSource = path.join(root, 'old-clone', 'orca-sub.mjs')
+    const source = path.join(root, 'new-clone', 'orca-sub.mjs')
+    const environment = { APPDATA: path.join(root, 'appdata') }
+    mkdirSync(path.dirname(oldSource), { recursive: true })
+    mkdirSync(path.dirname(source), { recursive: true })
+    writeFileSync(oldSource, '#!/usr/bin/env node\n')
+    writeFileSync(source, '#!/usr/bin/env node\n')
+
+    installSubCli({ source: oldSource, installDir, platform: 'win32', environment })
+    const result = installSubCli({ source, installDir, platform: 'win32', environment })
+
+    expect(result).toEqual({
+      status: 'updated',
+      commandPath: path.join(installDir, 'orca-sub.cmd')
+    })
+    const wrapper = readFileSync(path.join(installDir, 'orca-sub.cmd'), 'utf8')
+    expect(wrapper).toContain(source)
+    expect(wrapper).not.toContain(oldSource)
+  })
+
+  it('updates the legacy pinned Orca-sub Windows wrapper', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'orca-sub-install-'))
+    const installDir = path.join(root, 'bin')
+    const source = path.join(root, 'current-clone', 'orca-sub.mjs')
+    const commandPath = path.join(installDir, 'orca-sub.cmd')
+    mkdirSync(installDir, { recursive: true })
+    mkdirSync(path.dirname(source), { recursive: true })
+    writeFileSync(source, '#!/usr/bin/env node\n')
+    writeFileSync(
+      commandPath,
+      '@echo off\r\nset "ORCA_USER_DATA_PATH=E:\\Dev\\.orca-profiles\\mission-20260831-p4"\r\nset "ORCA_DEV_USER_DATA_PATH=E:\\Dev\\.orca-profiles\\mission-20260831-p4"\r\n"C:\\Program Files\\nodejs\\node.exe" "E:\\Dev\\orca-builds\\mission-cli-startup-v2\\orca-sub.mjs" %*\r\n'
+    )
+
+    const result = installSubCli({
+      source,
+      installDir,
+      platform: 'win32',
+      environment: { APPDATA: path.join(root, 'appdata') }
+    })
+
+    expect(result).toEqual({ status: 'updated', commandPath })
+    expect(readFileSync(commandPath, 'utf8')).toContain(source)
+  })
+
   it('targets the checkout that performed registration with a distinct profile', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'orca-sub-install-'))
     const installDirA = path.join(root, 'bin-a')
@@ -147,8 +194,10 @@ describe('installSubCli', () => {
     })
   })
 
-  it('separates Windows build from explicit registration', () => {
-    expect(packageJson.scripts['orca-sub:install']).toBe('node config/scripts/install-sub-cli.mjs')
+  it('deploys current CLI and Electron runtime before explicit registration', () => {
+    expect(packageJson.scripts['orca-sub:install']).toBe(
+      'corepack pnpm run build:cli && corepack pnpm run build:electron-vite && corepack pnpm run ensure:electron-runtime && node config/scripts/install-sub-cli.mjs'
+    )
     expect(packageJson.scripts['build:cli']).toContain('node config/scripts/install-sub-cli.mjs --build-hook')
   })
 
